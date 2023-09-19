@@ -1,0 +1,44 @@
+NEED TO MAKE INTO A REAL FUNCTION
+---------------------------------
+%let new_date = '29DEC2024'd;
+%let new_rate = 0.6;
+
+PROC PRINT data =work.rates;
+RUN;
+
+PROC SORT data=work.rates;
+BY start_date;
+RUN;
+
+
+
+DATA work.temp;
+SET work.rates;
+IF end_date = '01JUN3000'd THEN DO;
+end_date = &new_date.;
+END;
+RUN;
+
+
+data last;
+set rates end=last;
+if last then output;
+RUN;
+
+DATA last_temp;
+SET last;
+start_date = &new_date.;
+end_date = '01JUN3000'd;
+first_rate = second_rate;
+second_rate = &new_rate.;
+run;
+
+PROC APPEND base = temp data = last_temp;
+RUN;
+
+DATA work.rates;
+SET temp;
+RUN;
+
+PROC PRINT data = work.rates;
+RUN;

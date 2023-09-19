@@ -1,0 +1,5475 @@
+%let term = 4;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 100000;
+%let start_date = input('2020-07-15', yymmdd10.);
+
+%macro simple_amort;
+	DATA simple_schedule;
+	format period_date yymmdd10.;
+		%do period = 0 %to &total_payments.;
+		    period_date = intnx('month', &start_date., &period.);
+		    
+			payment_number = &period.;
+			
+			remaining_payments = &total_payments. - (payment_number - 1);
+			
+			interest_rate = 0.07;
+			
+			%IF &period = 0 %THEN %DO;
+			    opening_balance = &loan_amount.;
+			    repayment_amount = 0;
+			    repayment_int = 0;
+			    repayment_cap = 0;
+				closing_balance = &loan_amount.;
+			%END;
+			%ELSE %DO;
+			    opening_balance = closing_balance;
+			    repayment_amount = opening_balance * (((interest_rate / &pp.) * (1 + (interest_rate / &pp.)) ** (remaining_payments)) /
+			    															((1 + (interest_rate / &pp.)) ** (remaining_payments) - 1));
+			    repayment_int = opening_balance * interest_rate / &pp.;
+			    repayment_cap = repayment_amount - repayment_int;
+				closing_balance = opening_balance - repayment_cap;
+			%END;	
+			OUTPUT;
+		%end;
+	run;
+%mend;
+
+%simple_amort;
+
+
+--------
+NOW INCLUDIN NEW PAYMENT DATE INFO
+
+%let term = 4;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 100000;
+%let start_date = input('2020-07-15', yymmdd10.);
+
+%macro simple_amort;
+  DATA simple_schedule;
+  format payment_date yymmdd10. days_between_payment_dates best12.;
+  retain prev_payment_date;
+  
+  do period = 0 to &total_payments.;
+
+    payment_date = intnx('month', &start_date., period, 'same');
+
+    if period > 0 then days_between_payment_dates = intck('day', prev_payment_date, payment_date);
+    else days_between_payment_dates = 0;
+
+    prev_payment_date = payment_date;
+
+    payment_number = period;
+
+    remaining_payments = &total_payments. - period;
+
+    interest_rate = 0.07;
+
+    if period = 0 then do;
+      opening_balance = &loan_amount.;
+      repayment_amount = 0;
+      repayment_int = 0;
+      repayment_cap = 0;
+      closing_balance = &loan_amount.;
+    end;
+    else do;
+      opening_balance = closing_balance;
+      repayment_amount = opening_balance * (((interest_rate / &pp.) * (1 + (interest_rate / &pp.)) ** (remaining_payments)) /
+                                           ((1 + (interest_rate / &pp.)) ** (remaining_payments) - 1));
+      repayment_int = opening_balance * interest_rate / &pp.;
+      repayment_cap = repayment_amount - repayment_int;
+      closing_balance = opening_balance - repayment_cap;
+    end;
+    OUTPUT;
+  end;
+  drop prev_payment_date period; /* Drop the retained variable after the loop */
+  run;
+%mend;
+
+%simple_amort;
+
+-----------------------
+Now we have got effective lagged interest rates and we fixed a previous issue where the number of payments were being counted incorrectly during the repayment calculation.
+--------
+%let term = 3;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2019-12-15', yymmdd10.);
+
+%macro simple_amort;
+  DATA simple_schedule;
+  format payment_date yymmdd10. days_between_payment_dates best12.;
+  retain prev_payment_date first_interest_rate;
+  
+  do period = 0 to &total_payments.;
+
+    payment_date = intnx('month', &start_date., period, 'same');
+
+    if period > 0 then days_between_payment_dates = intck('day', prev_payment_date, payment_date);
+    else days_between_payment_dates = 0;
+
+    prev_payment_date = payment_date;
+
+    payment_number = period;
+
+    remaining_payments = &total_payments. - period + 1;
+
+
+
+
+----------------------------------------------------------------------
+We have integrated the payment calculations but there are errors in the process
+------------------------------------------------------------------------
+
+%let term = 3;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2019-12-15', yymmdd10.);
+
+DATA work.rates;
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+1995-01-01 2020-02-13 0.1125 0.1175
+2020-02-13 2021-05-26 0.1175 0.1225
+2021-05-26 3000-06-01 0.1225 0.1275
+
+
+;
+
+	%macro simple_amort;
+	DATA dim_amort;
+		format payment_date yymmdd10. days_between_payment_dates best12.;
+		retain prev_payment_date first_interest_rate;
+
+		do period=0 to &total_payments.;
+			payment_date=intnx('month', &start_date., period, 'same');
+
+			if period > 0 then
+				days_between_payment_dates=intck('day', prev_payment_date, payment_date);
+			else
+				days_between_payment_dates=0;
+			prev_payment_date=payment_date;
+			payment_number=period;
+			remaining_payments=&total_payments. - period + 1;
+			OUTPUT;
+		end;
+		drop period prev_payment_date;
+	run;
+
+	PROC SQL;
+		CREATE TABLE work.new AS SELECT *, CASE WHEN 
+			payment_date - start_date < days_between_payment_dates THEN 
+			payment_date - start_date ELSE days_between_payment_dates END AS daysinone, 
+			CASE WHEN days_between_payment_dates - (payment_date - start_date) < 0 THEN 
+			0 ELSE days_between_payment_dates - (payment_date - start_date) END AS 
+			daysintwo FROM work.dim_amort a LEFT JOIN work.rates r ON a.payment_date 
+			BETWEEN r.start_date and r.end_date;
+	QUIT;
+
+	DATA work.new;
+		SET work.new;
+		lfr=LAG(first_rate);
+		lsr=LAG(second_rate);
+	run;
+
+	DATA simple_amort;
+		SET work.new;
+
+		do payment_number=0 to &total_payments.;
+
+			if payment_number=0 then
+				do;
+					opening_balance=&loan_amount.;
+					first_eff_interest_rate=0;
+					second_eff_interest_Rate=0;
+					fr_repayment_amount=0;
+					fr_repayment_int=0;
+					fr_repayment_cap=0;
+					sr_repayment_amount=0;
+					sr_repayment_int=0;
+					sr_repayment_cap=0;
+					total_repayment_amount=0;
+					total_repayment_int=0;
+					total_repayment_cap=0;
+					closing_balance=&loan_amount.;
+				end;
+			else
+				do;
+					opening_balance=closing_balance;
+					first_eff_interest_rate=lfr*daysinone/365;
+					second_eff_interest_rate=lsr*daysintwo/365;
+					fr_repayment_amount=opening_balance * (((first_eff_interest_rate) * 
+						(1 + (first_eff_interest_rate)) ** (remaining_payments*daysinone/365)) / 
+						((1 + (first_eff_interest_rate)) ** (remaining_payments*daysinone/365) 
+						- 1));
+					fr_repayment_int=opening_balance * first_eff_interest_rate;
+					fr_repayment_cap=fr_repayment_amount - fr_repayment_int;
+
+					if daysintwo=0 THEN
+						DO;
+							sr_repayment_amount=0;
+							sr_repayment_int=0;
+							sr_repayment_cap=0;
+						END;
+					ELSE
+						DO;
+							sr_repayment_amount=opening_balance * (((second_eff_interest_rate) * 
+								(1 + (second_eff_interest_rate)) ** (remaining_payments*daysintwo/365)) 
+								/ ((1 + (second_eff_interest_rate)) ** 
+								(remaining_payments*daysintwo/365) - 1));
+							sr_repayment_int=opening_balance * second_eff_interest_rate;
+							sr_repayment_cap=sr_repayment_amount - sr_repayment_int;
+						END;
+					total_repayment_amount=fr_repayment_amount + sr_repayment_amount;
+					total_repayment_int=fr_repayment_int + sr_repayment_int;
+					total_repayment_cap=fr_repayment_cap + sr_repayment_cap;
+					closing_balance=opening_balance - total_repayment_cap;
+				end;
+		end;
+		OUTPUT;
+	run;
+
+%mend;
+
+%simple_amort;
+
+
+--------------------
+----------------------
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2019-12-15', yymmdd10.);
+
+DATA work.rates;
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+1995-01-01 2020-02-13 0.1125 0.1175
+2020-02-13 2021-05-26 0.1175 0.1225
+2021-05-26 3000-06-01 0.1225 0.1275
+
+
+;
+
+	%macro simple_amort;
+	DATA dim_amort;
+		format payment_date yymmdd10. days_between_payment_dates best12.;
+		retain prev_payment_date first_interest_rate;
+
+		do period=0 to &total_payments.;
+			payment_date=intnx('month', &start_date., period, 'same');
+
+			if period > 0 then
+				days_between_payment_dates=intck('day', prev_payment_date, payment_date);
+			else
+				days_between_payment_dates=0;
+			prev_payment_date=payment_date;
+			payment_number=period;
+			remaining_payments=&total_payments. - period + 1;
+			OUTPUT;
+		end;
+		drop period prev_payment_date;
+	run;
+
+	PROC SQL;
+		CREATE TABLE work.new AS SELECT *, CASE WHEN 
+			payment_date - start_date < days_between_payment_dates THEN 
+			payment_date - start_date ELSE days_between_payment_dates END AS daysinone, 
+			CASE WHEN days_between_payment_dates - (payment_date - start_date) < 0 THEN 
+			0 ELSE days_between_payment_dates - (payment_date - start_date) END AS 
+			daysintwo FROM work.dim_amort a LEFT JOIN work.rates r ON a.payment_date 
+			BETWEEN r.start_date and r.end_date;
+	QUIT;
+
+	DATA work.new;
+		SET work.new;
+		lfr=LAG(first_rate);
+		lsr=LAG(second_rate);
+		opening_balance=&loan_amount.;
+					first_eff_interest_rate=0;
+					second_eff_interest_Rate=0;
+					fr_repayment_amount=0;
+					fr_repayment_int=0;
+					fr_repayment_cap=0;
+					sr_repayment_amount=0;
+					sr_repayment_int=0;
+					sr_repayment_cap=0;
+					total_repayment_amount=0;
+					total_repayment_int=0;
+					total_repayment_cap=0;
+					closing_balance=&loan_amount.;
+	run;
+
+	DATA simple_amort;
+		SET work.new;
+
+			if payment_number=0 then
+				do;
+					opening_balance=&loan_amount.;
+					first_eff_interest_rate=0;
+					second_eff_interest_Rate=0;
+					fr_repayment_amount=0;
+					fr_repayment_int=0;
+					fr_repayment_cap=0;
+					sr_repayment_amount=0;
+					sr_repayment_int=0;
+					sr_repayment_cap=0;
+					total_repayment_amount=0;
+					total_repayment_int=0;
+					total_repayment_cap=0;
+					closing_balance=&loan_amount.;
+				end;
+			else
+				do;
+					opening_balance=closing_balance;
+					first_eff_interest_rate=lfr*daysinone/365;
+					second_eff_interest_rate=lsr*daysintwo/365;
+					fr_repayment_amount=opening_balance * (((first_eff_interest_rate) * 
+						(1 + (first_eff_interest_rate)) ** (remaining_payments)) / 
+						((1 + (first_eff_interest_rate)) ** (remaining_payments) 
+						- 1));
+					fr_repayment_int=opening_balance * first_eff_interest_rate;
+					fr_repayment_cap=fr_repayment_amount - fr_repayment_int;
+
+					if daysintwo=0 THEN
+						DO;
+							sr_repayment_amount=0;
+							sr_repayment_int=0;
+							sr_repayment_cap=0;
+						END;
+					ELSE
+						DO;
+							sr_repayment_amount=opening_balance * (((second_eff_interest_rate) * 
+								(1 + (second_eff_interest_rate)) ** (remaining_payments)) 
+								/ ((1 + (second_eff_interest_rate)) ** 
+								(remaining_payments) - 1));
+							sr_repayment_int=opening_balance * second_eff_interest_rate;
+							sr_repayment_cap=sr_repayment_amount - sr_repayment_int;
+						END;
+					total_repayment_amount=fr_repayment_amount + sr_repayment_amount;
+					total_repayment_int=fr_repayment_int + sr_repayment_int;
+					total_repayment_cap=fr_repayment_cap + sr_repayment_cap;
+					closing_balance=opening_balance - total_repayment_cap;
+				end;
+		OUTPUT;
+	run;
+
+%mend;
+
+%simple_amort;
+
+proc print data= work.simple_amort;
+run;
+    if period = 0 then do;
+      first_interest_rate = 0.07;
+      opening_balance = &loan_amount.;
+      repayment_amount = 0;
+      repayment_int = 0;
+      repayment_cap = 0;
+      closing_balance = &loan_amount.;
+    end;
+    else do;
+      first_eff_interest_rate = first_interest_rate*days_between_payment_dates/365;
+      first_interest_rate = 0.07;
+      opening_balance = closing_balance;
+      repayment_amount = opening_balance * (((first_eff_interest_rate) * (1 + (first_eff_interest_rate)) ** (remaining_payments)) /
+                                           ((1 + (first_eff_interest_rate)) ** (remaining_payments) - 1));
+      repayment_int = opening_balance * first_eff_interest_rate;
+      repayment_cap = repayment_amount - repayment_int;
+      closing_balance = opening_balance - repayment_cap;
+    end;
+    OUTPUT;
+  end;
+  drop prev_payment_date period; /* Drop the retained variable after the loop */
+  run;
+%mend;
+
+%simple_amort;
+
+----------------------------------------
+Making spoofed rates
+-----------------------------------
+DATA work.rates;
+format start_date end_date yymmdd10.;
+INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+DATALINES;
+2023-05-26 3000-06-01 0.1125 0.1175
+2023-01-13 2023-05-26 0.1075 0.1125
+1995-01-01 2023-01-13 0.1125 0.1175
+;
+
+****** Now we need to break apart the AMORT macro on top and then do a neat little join.... ****************
+
+---------
+Now we have a dates/payments/and rates
+-=----------
+%let term = 3;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2019-12-15', yymmdd10.);
+
+DATA work.rates;
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+1995-01-01 2020-02-13 0.1125 0.1175
+2020-02-13 2021-05-26 0.1175 0.1225
+2021-05-26 3000-06-01 0.1225 0.1275
+
+
+;
+
+	%macro simple_amort;
+	DATA dim_amort;
+		format payment_date yymmdd10. days_between_payment_dates best12.;
+		retain prev_payment_date first_interest_rate;
+
+		do period=0 to &total_payments.;
+			payment_date=intnx('month', &start_date., period, 'same');
+
+			if period > 0 then
+				days_between_payment_dates=intck('day', prev_payment_date, payment_date);
+			else
+				days_between_payment_dates=0;
+			prev_payment_date=payment_date;
+			payment_number=period;
+			remaining_payments=&total_payments. - period + 1;
+			OUTPUT;
+		end;
+		drop period prev_payment_date;
+	run;
+
+	PROC SQL;
+		CREATE TABLE work.new AS SELECT *, payment_date - start_date AS daysinone FROM work.dim_amort a LEFT JOIN work.rates r ON a.payment_date 
+			BETWEEN r.start_date and r.end_date;
+	QUIT;
+	
+	DATA work.new;
+	SET work.new;
+	lfr = LAG(first_rate);
+	lsr = LAG(second_rate);
+	run;
+
+%mend;
+
+%simple_amort;
+
+
+-------
+NEW including days in interest rate
+--------
+
+%let term = 3;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2019-12-15', yymmdd10.);
+
+DATA work.rates;
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+1995-01-01 2020-02-13 0.1125 0.1175
+2020-02-13 2021-05-26 0.1175 0.1225
+2021-05-26 3000-06-01 0.1225 0.1275
+
+
+;
+
+	%macro simple_amort;
+	DATA dim_amort;
+		format payment_date yymmdd10. days_between_payment_dates best12.;
+		retain prev_payment_date first_interest_rate;
+
+		do period=0 to &total_payments.;
+			payment_date=intnx('month', &start_date., period, 'same');
+
+			if period > 0 then
+				days_between_payment_dates=intck('day', prev_payment_date, payment_date);
+			else
+				days_between_payment_dates=0;
+			prev_payment_date=payment_date;
+			payment_number=period;
+			remaining_payments=&total_payments. - period + 1;
+			OUTPUT;
+		end;
+		drop period prev_payment_date;
+	run;
+
+	PROC SQL;
+		CREATE TABLE work.new AS 
+		SELECT *,
+		       CASE WHEN payment_date - start_date < days_between_payment_dates THEN payment_date - start_date
+		       ELSE days_between_payment_dates END AS daysinone,
+		       CASE WHEN days_between_payment_dates - (payment_date - start_date) < 0 THEN 0 
+		       ELSE days_between_payment_dates - (payment_date - start_date) END AS daysintwo
+		    FROM work.dim_amort a LEFT JOIN work.rates r ON a.payment_date 
+			BETWEEN r.start_date and r.end_date;
+	QUIT;
+	
+	DATA work.new;
+	SET work.new;
+	lfr = LAG(first_rate);
+	lsr = LAG(second_rate);
+	run;
+
+%mend;
+
+%simple_amort;
+
+
+-------------------
+??!?!?!?
+------------------
+%let term = 3;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2019-12-15', yymmdd10.);
+
+DATA work.rates;
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+1995-01-01 2020-02-13 0.1125 0.1175
+2020-02-13 2021-05-26 0.1175 0.1225
+2021-05-26 3000-06-01 0.1225 0.1275
+
+
+;
+
+	%macro simple_amort;
+	DATA dim_amort;
+		format payment_date yymmdd10. days_between_payment_dates best12.;
+		retain prev_payment_date first_interest_rate;
+
+		do period=0 to &total_payments.;
+			payment_date=intnx('month', &start_date., period, 'same');
+
+			if period > 0 then
+				days_between_payment_dates=intck('day', prev_payment_date, payment_date);
+			else
+				days_between_payment_dates=0;
+			prev_payment_date=payment_date;
+			payment_number=period;
+			remaining_payments=&total_payments. - period + 1;
+			OUTPUT;
+		end;
+		drop prev_payment_date;
+	run;
+
+	PROC SQL;
+		CREATE TABLE work.new AS SELECT *, CASE WHEN 
+			payment_date - start_date < days_between_payment_dates THEN 
+			payment_date - start_date ELSE days_between_payment_dates END AS daysinone, 
+			CASE WHEN days_between_payment_dates - (payment_date - start_date) < 0 THEN 
+			0 ELSE days_between_payment_dates - (payment_date - start_date) END AS 
+			daysintwo FROM work.dim_amort a LEFT JOIN work.rates r ON a.payment_date 
+			BETWEEN r.start_date and r.end_date;
+	QUIT;
+
+	DATA work.new;
+		SET work.new;
+		lfr=LAG(first_rate);
+		lsr=LAG(second_rate);
+
+		IF period=0 THEN
+			DO;
+				opening_balance=&loan_amount.;
+				fr_repayment=0;
+				fr_cap=0;
+				fr_int=0;
+				sr_repayment=0;
+				sr_cap=0;
+				sr_int=0;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=&loan_amount.;
+			END;
+		ELSE IF period > 0 THEN
+			DO;
+
+				IF period=1 THEN
+					opening_balance=&loan_amount.;
+				fr_repayment=30000;
+				fr_cap=20000;
+				fr_int=10000;
+				sr_repayment=10000;
+				sr_cap=7000;
+				sr_int=3000;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=opening_balance - tot_cap;
+			END;
+		;
+	run;
+
+	DATA simple_amort;
+		SET work.new;
+
+		IF period=0 THEN
+			DO;
+				opening_balance=&loan_amount.;
+				fr_repayment=0;
+				fr_cap=0;
+				fr_int=0;
+				sr_repayment=0;
+				sr_cap=0;
+				sr_int=0;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=&loan_amount.;
+			END;
+		ELSE IF period > 0 THEN
+			DO;
+				opening_balance=closing_balance;
+				fr_repayment=30000;
+				fr_cap=20000;
+				fr_int=10000;
+				sr_repayment=10000;
+				sr_cap=7000;
+				sr_int=3000;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=opening_balance - tot_cap;
+			END;
+	run;
+
+%mend;
+
+%simple_amort;
+
+-------------------------------------
+DONE: Fixed Balance Carry Over.
+TODO: Add actual repayment calculations;
+-------------------------------------
+%let term = 3;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2019-12-15', yymmdd10.);
+
+DATA work.rates;
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+1995-01-01 2020-02-13 0.1125 0.1175
+2020-02-13 2021-05-26 0.1175 0.1225
+2021-05-26 3000-06-01 0.1225 0.1275
+
+
+;
+
+	%macro simple_amort;
+	DATA dim_amort;
+		format payment_date yymmdd10. days_between_payment_dates best12.;
+		retain prev_payment_date first_interest_rate;
+
+		do period=0 to &total_payments.;
+			payment_date=intnx('month', &start_date., period, 'same');
+
+			if period > 0 then
+				days_between_payment_dates=intck('day', prev_payment_date, payment_date);
+			else
+				days_between_payment_dates=0;
+			prev_payment_date=payment_date;
+			payment_number=period;
+			remaining_payments=&total_payments. - period + 1;
+			OUTPUT;
+		end;
+		drop prev_payment_date;
+	run;
+
+	PROC SQL;
+		CREATE TABLE work.new AS SELECT *, CASE WHEN 
+			payment_date - start_date < days_between_payment_dates THEN 
+			payment_date - start_date ELSE days_between_payment_dates END AS daysinone, 
+			CASE WHEN days_between_payment_dates - (payment_date - start_date) < 0 THEN 
+			0 ELSE days_between_payment_dates - (payment_date - start_date) END AS 
+			daysintwo FROM work.dim_amort a LEFT JOIN work.rates r ON a.payment_date 
+			BETWEEN r.start_date and r.end_date;
+	QUIT;
+
+	DATA work.new;
+		SET work.new;
+		RETAIN closing_balance;
+		lfr=LAG(first_rate);
+		lsr=LAG(second_rate);
+
+		IF period=0 THEN
+			DO;
+				opening_balance=&loan_amount.;
+				fr_repayment=0;
+				fr_cap=0;
+				fr_int=0;
+				sr_repayment=0;
+				sr_cap=0;
+				sr_int=0;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=&loan_amount.;
+			END;
+		ELSE
+			DO;
+				opening_balance=closing_balance;
+				fr_repayment=30000;
+				fr_cap=20000;
+				fr_int=10000;
+				sr_repayment=10000;
+				sr_cap=7000;
+				sr_int=3000;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=opening_balance - tot_cap;
+			END;
+	run;
+
+%mend;
+
+%simple_amort;
+
+------------------------------------
+DONE: Variable rates under normal. Balances and moving. 
+TODO: SHARIA and create function/process to update interest rates....
+------------------------------------
+DATA work.rates;
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+1995-01-01 2020-02-13 0.1125 0.1175
+2020-02-13 2021-05-26 0.1175 0.1225
+2021-05-26 3000-06-01 0.1225 0.1275
+
+
+;
+
+	%macro simple_amort;
+	DATA dim_amort;
+		format payment_date yymmdd10. days_between_payment_dates best12.;
+		retain prev_payment_date first_interest_rate;
+
+		do period=0 to &total_payments.;
+			payment_date=intnx('month', &start_date., period, 'same');
+
+			if period > 0 then
+				days_between_payment_dates=intck('day', prev_payment_date, payment_date);
+			else
+				days_between_payment_dates=0;
+			prev_payment_date=payment_date;
+			payment_number=period;
+			remaining_payments=&total_payments. - period + 1;
+			OUTPUT;
+		end;
+		drop prev_payment_date;
+	run;
+
+	PROC SQL;
+		CREATE TABLE work.new AS SELECT *, CASE WHEN 
+			payment_date - start_date < days_between_payment_dates THEN 
+			payment_date - start_date ELSE days_between_payment_dates END AS daysinone, 
+			CASE WHEN days_between_payment_dates - (payment_date - start_date) < 0 THEN 
+			0 ELSE days_between_payment_dates - (payment_date - start_date) END AS 
+			daysintwo FROM work.dim_amort a LEFT JOIN work.rates r ON a.payment_date 
+			BETWEEN r.start_date and r.end_date;
+	QUIT;
+
+	DATA work.amort_schedule;
+		SET work.new;
+		RETAIN closing_balance;
+		lfr=LAG(first_rate);
+		lsr=LAG(second_rate);
+		first_eff_rate = lfr / 365.3 * daysinone;
+		second_eff_rate = lfr / 365.3 * daysintwo;
+
+		IF period=0 THEN
+			DO;
+				opening_balance=&loan_amount.;
+				fr_repayment=0;
+				fr_cap=0;
+				fr_int=0;
+				sr_repayment=0;
+				sr_cap=0;
+				sr_int=0;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=&loan_amount.;
+			END;
+		ELSE
+			DO;
+				opening_balance=closing_balance;
+				
+				IF daysinone = 0 THEN DO;
+				fr_repayment=0;
+				fr_int = 0;
+				END;
+				
+				ELSE DO;
+				fr_repayment=opening_balance/((1-(1+first_eff_rate)**(-remaining_payments))/(first_eff_rate))*daysinone/days_between_payment_dates;
+				fr_int = opening_balance * first_eff_rate;
+				END;
+				
+				fr_cap = fr_repayment - fr_int;
+				
+				IF daysintwo = 0 THEN DO;
+				sr_repayment=0;
+				sr_int=0;
+				END;
+				
+				ELSE DO;
+				sr_repayment=opening_balance/((1-(1+second_eff_Rate)**(-remaining_payments))/(second_eff_rate))*daysintwo/days_between_payment_dates;
+				sr_int=opening_balance*second_eff_rate;
+				END;
+				
+				sr_cap = sr_repayment - sr_int;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=opening_balance - tot_cap;
+			END;
+	run;
+
+PROC PRINT DATA=work.amort_schedule;
+VAR payment_date payment_number days_between_payment_dates 
+    start_date end_date lfr daysinone fr_int fr_repayment lsr daysintwo sr_int sr_repayment 
+    tot_int tot_cap tot_rep closing_balance;
+RUN;
+%mend;
+
+%let term = 3;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2019-12-15', yymmdd10.);
+
+%simple_amort;
+
+--------------------
+SUMMARY: SHARIA attempt 1, daysinone when the switch occurs is biugging out...
+TODO: SHARIA and create function/process to update interest rates....
+--------------------
+DATA work.rates;
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+1995-01-01 2020-02-13 0.1125 0.1175
+2020-02-13 2021-05-26 0.1175 0.1225
+2021-05-26 3000-06-01 0.1225 0.1275
+
+
+;
+
+	%macro simple_amort;
+	DATA dim_amort;
+		format payment_date yymmdd10. days_between_payment_dates best12.;
+		retain prev_payment_date;
+
+		do period=0 to &total_payments.;
+			payment_date=intnx('month', &start_date., period, 'same');
+
+			if period > 0 then
+				days_between_payment_dates=intck('day', prev_payment_date, payment_date);
+			else
+				days_between_payment_dates=0;
+			prev_payment_date=payment_date;
+			payment_number=period;
+			remaining_payments=&total_payments. - period + 1;
+			OUTPUT;
+		end;
+		drop prev_payment_date;
+	run;
+
+	PROC SQL;
+		CREATE TABLE work.new AS 
+		SELECT *, 
+		CASE WHEN payment_date - start_date < days_between_payment_dates THEN payment_date - start_date 
+		ELSE days_between_payment_dates END AS daysinone,
+		CASE WHEN payment_date - start_date < days_between_payment_dates THEN payment_date - INTNX('month', start_date, 0, 'end') 
+		ELSE days_between_payment_dates END AS daysinone_sharia,
+		CASE WHEN days_between_payment_dates - (payment_date - start_date) < 0 THEN 0 
+		     ELSE days_between_payment_dates - (payment_date - start_date) END AS daysintwo,
+		CASE WHEN days_between_payment_dates - (payment_date - INTNX('month', start_date, 0, 'end')) < 0 THEN 0 
+		     ELSE days_between_payment_dates - (payment_date - INTNX('month', start_date, 0, 'end')) END AS daysintwo_sharia
+		     FROM work.dim_amort a LEFT JOIN work.rates r ON a.payment_date 
+			 BETWEEN r.start_date and r.end_date;
+	QUIT;
+
+	DATA work.amort_schedule;
+		SET work.new;
+		RETAIN closing_balance;
+		lfr=LAG(first_rate);
+		lsr=LAG(second_rate);
+		first_eff_rate = lfr / 365.3 * daysinone;
+		second_eff_rate = lfr / 365.3 * daysintwo;
+
+		IF period=0 THEN
+			DO;
+				opening_balance=&loan_amount.;
+				fr_repayment=0;
+				fr_cap=0;
+				fr_int=0;
+				sr_repayment=0;
+				sr_cap=0;
+				sr_int=0;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=&loan_amount.;
+			END;
+		ELSE
+			DO;
+				opening_balance=closing_balance;
+				
+				IF daysinone = 0 THEN DO;
+				fr_repayment=0;
+				fr_int = 0;
+				END;
+				
+				ELSE DO;
+				fr_repayment=opening_balance/((1-(1+first_eff_rate)**(-remaining_payments))/(first_eff_rate))*daysinone/days_between_payment_dates;
+				fr_int = opening_balance * first_eff_rate;
+				END;
+				
+				fr_cap = fr_repayment - fr_int;
+				
+				IF daysintwo = 0 THEN DO;
+				sr_repayment=0;
+				sr_int=0;
+				END;
+				
+				ELSE DO;
+				sr_repayment=opening_balance/((1-(1+second_eff_Rate)**(-remaining_payments))/(second_eff_rate))*daysintwo/days_between_payment_dates;
+				sr_int=opening_balance*second_eff_rate;
+				END;
+				
+				sr_cap = sr_repayment - sr_int;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=opening_balance - tot_cap;
+			END;
+	run;
+
+PROC PRINT DATA=work.amort_schedule;
+VAR payment_date payment_number days_between_payment_dates 
+    start_date end_date lfr daysinone fr_int fr_repayment lsr daysintwo sr_int sr_repayment 
+    tot_int tot_cap tot_rep closing_balance;
+RUN;
+%mend;
+
+%let term = 3;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2019-12-15', yymmdd10.);
+%let sharia = y;
+
+%simple_amort;
+---------------------------------------------
+We have a more ?refined? sharia rule. 
+Still need to fix SHARIA.
+Need to fix when payment dates coincide with interest rate change dates.
+----------------------------------------------
+DATA work.rates;
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+1995-01-01 2020-02-13 0.1125 0.1175
+2020-02-13 2021-05-26 0.1175 0.1225
+2021-05-26 3000-06-01 0.1225 0.1275
+
+
+;
+
+	%macro simple_amort;
+	DATA dim_amort;
+		format payment_date yymmdd10. days_between_payment_dates best12.;
+		retain prev_payment_date;
+
+		do period=0 to &total_payments.;
+			payment_date=intnx('month', &start_date., period, 'same');
+
+			if period > 0 then
+				days_between_payment_dates=intck('day', prev_payment_date, payment_date);
+			else
+				days_between_payment_dates=0;
+			prev_payment_date=payment_date;
+			payment_number=period;
+			remaining_payments=&total_payments. - period + 1;
+			sharia = "&sharia";
+			OUTPUT;
+		end;
+		drop prev_payment_date;
+	run;
+
+	PROC SQL;
+		CREATE TABLE work.new AS 
+		SELECT *,
+		CASE WHEN days_between_payment_dates - (payment_date - start_date1) < 0 THEN days_between_payment_dates 
+		     ELSE days_between_payment_dates - (payment_date - start_date1) END AS daysinone,
+		CASE WHEN payment_date - start_date1 < days_between_payment_dates THEN payment_date - start_date 
+		ELSE 0 END AS daysintwo
+		FROM (SELECT *,
+		        CASE WHEN UPCASE(sharia)='Y' THEN INTNX('MONTH', start_date, 1, 'START')
+		        ELSE start_date END AS start_date1  
+		     FROM work.dim_amort a LEFT JOIN work.rates r ON a.payment_date 
+			 BETWEEN r.start_date and r.end_date);
+	QUIT;
+
+	DATA work.amort_schedule;
+		SET work.new;
+		RETAIN closing_balance;
+		lfr=LAG(first_rate);
+		lsr=LAG(second_rate);
+		first_eff_rate = lfr / 365.3 * daysinone;
+		second_eff_rate = lfr / 365.3 * daysintwo;
+
+		IF period=0 THEN
+			DO;
+				opening_balance=&loan_amount.;
+				fr_repayment=0;
+				fr_cap=0;
+				fr_int=0;
+				sr_repayment=0;
+				sr_cap=0;
+				sr_int=0;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=&loan_amount.;
+			END;
+		ELSE
+			DO;
+				opening_balance=closing_balance;
+				
+				IF daysinone = 0 THEN DO;
+				fr_repayment=0;
+				fr_int = 0;
+				END;
+				
+				ELSE DO;
+				fr_repayment=opening_balance/((1-(1+first_eff_rate)**(-remaining_payments))/(first_eff_rate))*daysinone/days_between_payment_dates;
+				fr_int = opening_balance * first_eff_rate;
+				END;
+				
+				fr_cap = fr_repayment - fr_int;
+				
+				IF daysintwo = 0 THEN DO;
+				sr_repayment=0;
+				sr_int=0;
+				END;
+				
+				ELSE DO;
+				sr_repayment=opening_balance/((1-(1+second_eff_Rate)**(-remaining_payments))/(second_eff_rate))*daysintwo/days_between_payment_dates;
+				sr_int=opening_balance*second_eff_rate;
+				END;
+				
+				sr_cap = sr_repayment - sr_int;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=opening_balance - tot_cap;
+			END;
+	run;
+
+PROC PRINT DATA=work.amort_schedule;
+VAR payment_date payment_number days_between_payment_dates 
+    start_date first_rate end_date second_rate lfr daysinone fr_int fr_repayment lsr daysintwo sr_int sr_repayment 
+    tot_int tot_cap tot_rep closing_balance;
+RUN;
+%mend;
+
+%let term = 3;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2019-12-14', yymmdd10.);
+%let sharia = n;
+
+%simple_amort;
+------------------------------------
+Fixed equals to case
+-----------------------------------
+
+;
+
+	%macro simple_amort;
+	DATA dim_amort;
+		format payment_date yymmdd10. days_between_payment_dates best12.;
+		retain prev_payment_date;
+
+		do period=0 to &total_payments.;
+			payment_date=intnx('month', &start_date., period, 'same');
+
+			if period > 0 then
+				days_between_payment_dates=intck('day', prev_payment_date, payment_date);
+			else
+				days_between_payment_dates=0;
+			prev_payment_date=payment_date;
+			payment_number=period;
+			remaining_payments=&total_payments. - period + 1;
+			sharia = "&sharia";
+			OUTPUT;
+		end;
+		drop prev_payment_date;
+	run;
+
+	PROC SQL;
+		CREATE TABLE work.new AS 
+		SELECT *,
+		CASE WHEN days_between_payment_dates - (payment_date - start_date1) <= 0 THEN days_between_payment_dates 
+		     ELSE days_between_payment_dates - (payment_date - start_date1) END AS daysinone,
+		CASE WHEN payment_date - start_date1 < days_between_payment_dates THEN payment_date - start_date 
+		ELSE 0 END AS daysintwo
+		FROM (SELECT *,
+		        CASE WHEN UPCASE(sharia)='Y' THEN INTNX('MONTH', start_date, 1, 'START')
+		        ELSE start_date END AS start_date1  
+		     FROM work.dim_amort a LEFT JOIN work.rates r 
+			ON a.payment_date >= r.start_date and a.payment_date < r.end_date);
+	QUIT;
+
+	DATA work.amort_schedule;
+		SET work.new;
+		RETAIN closing_balance;
+		lfr=LAG(first_rate);
+		lsr=LAG(second_rate);
+		first_eff_rate = lfr / 365.3 * daysinone;
+		second_eff_rate = lfr / 365.3 * daysintwo;
+
+		IF period=0 THEN
+			DO;
+				opening_balance=&loan_amount.;
+				fr_repayment=0;
+				fr_cap=0;
+				fr_int=0;
+				sr_repayment=0;
+				sr_cap=0;
+				sr_int=0;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=&loan_amount.;
+			END;
+		ELSE
+			DO;
+				opening_balance=closing_balance;
+				
+				IF daysinone = 0 THEN DO;
+				fr_repayment=0;
+				fr_int = 0;
+				END;
+				
+				ELSE DO;
+				fr_repayment=opening_balance/((1-(1+first_eff_rate)**(-remaining_payments))/(first_eff_rate))*daysinone/days_between_payment_dates;
+				fr_int = opening_balance * first_eff_rate;
+				END;
+				
+				fr_cap = fr_repayment - fr_int;
+				
+				IF daysintwo = 0 THEN DO;
+				sr_repayment=0;
+				sr_int=0;
+				END;
+				
+				ELSE DO;
+				sr_repayment=opening_balance/((1-(1+second_eff_Rate)**(-remaining_payments))/(second_eff_rate))*daysintwo/days_between_payment_dates;
+				sr_int=opening_balance*second_eff_rate;
+				END;
+				
+				sr_cap = sr_repayment - sr_int;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=opening_balance - tot_cap;
+			END;
+	run;
+
+PROC PRINT DATA=work.amort_schedule;
+VAR payment_date payment_number days_between_payment_dates 
+    start_date first_rate end_date second_rate lfr daysinone fr_int fr_repayment lsr daysintwo sr_int sr_repayment 
+    tot_int tot_cap tot_rep closing_balance;
+RUN;
+%mend;
+
+%let term = 3;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2019-12-13', yymmdd10.);
+%let sharia = n;
+
+%simple_amort;
+
+----------------------
+Cleaned up solution to equals to case.
+TODO: SHARIA
+-----------------------
+DATA work.rates;
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+1995-01-01 2020-02-13 0.1125 0.1175
+2020-02-13 2021-05-26 0.1175 0.1225
+2021-05-26 3000-06-01 0.1225 0.1275
+;
+
+%macro simple_amort;
+	DATA dim_amort;
+		format payment_date yymmdd10. days_between_payment_dates best12.;
+		retain prev_payment_date;
+
+		do period=0 to &total_payments.;
+			payment_date=intnx('month', &start_date., period, 'same');
+
+			if period > 0 then
+				days_between_payment_dates=intck('day', prev_payment_date, payment_date);
+			else
+				days_between_payment_dates=0;
+			prev_payment_date=payment_date;
+			payment_number=period;
+			remaining_payments=&total_payments. - period + 1;
+			sharia = "&sharia";
+			OUTPUT;
+		end;
+		drop prev_payment_date;
+	run;
+
+	PROC SQL;
+		CREATE TABLE work.new AS 
+		SELECT *,
+		CASE WHEN days_between_payment_dates - (payment_date - start_date) <= 0 THEN days_between_payment_dates 
+		     ELSE days_between_payment_dates - (payment_date - start_date) END AS daysinone,
+		CASE WHEN payment_date - start_date < days_between_payment_dates THEN payment_date - start_date 
+		ELSE 0 END AS daysintwo
+		FROM work.dim_amort a LEFT JOIN work.rates r 
+			ON a.payment_date >= r.start_date and a.payment_date < r.end_date;
+	QUIT;
+
+	DATA work.amort_schedule;
+		SET work.new;
+		RETAIN closing_balance;
+		lfr=LAG(first_rate);
+		lsr=LAG(second_rate);
+		first_eff_rate = lfr / 365.3 * daysinone;
+		second_eff_rate = lfr / 365.3 * daysintwo;
+
+		IF period=0 THEN
+			DO;
+				opening_balance=&loan_amount.;
+				fr_repayment=0;
+				fr_cap=0;
+				fr_int=0;
+				sr_repayment=0;
+				sr_cap=0;
+				sr_int=0;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=&loan_amount.;
+			END;
+		ELSE
+			DO;
+				opening_balance=closing_balance;
+				
+				IF daysinone = 0 THEN DO;
+				fr_repayment=0;
+				fr_int = 0;
+				END;
+				
+				ELSE DO;
+				fr_repayment=opening_balance/((1-(1+first_eff_rate)**(-remaining_payments))/(first_eff_rate))*daysinone/days_between_payment_dates;
+				fr_int = opening_balance * first_eff_rate;
+				END;
+				
+				fr_cap = fr_repayment - fr_int;
+				
+				IF daysintwo = 0 THEN DO;
+				sr_repayment=0;
+				sr_int=0;
+				END;
+				
+				ELSE DO;
+				sr_repayment=opening_balance/((1-(1+second_eff_Rate)**(-remaining_payments))/(second_eff_rate))*daysintwo/days_between_payment_dates;
+				sr_int=opening_balance*second_eff_rate;
+				END;
+				
+				sr_cap = sr_repayment - sr_int;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=opening_balance - tot_cap;
+			END;
+	run;
+
+PROC PRINT DATA=work.amort_schedule;
+VAR payment_date payment_number days_between_payment_dates 
+    start_date first_rate end_date second_rate lfr daysinone fr_int fr_repayment lsr daysintwo sr_int sr_repayment 
+    tot_int tot_cap tot_rep closing_balance;
+RUN;
+%mend;
+
+%let term = 3;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2019-12-13', yymmdd10.);
+%let sharia = n;
+
+%simple_amort;
+-----------------
+Building SHARIA
+-----------------
+DATA work.rate2;
+    SET work.rates;
+    start_date_sharia = INTNX('MONTH', start_date, 1, 'begin');
+    
+    /* Apply the desired format to start_date_sharia */
+    FORMAT start_date_sharia yymmdd10.;
+    
+    /* Convert start_date_sharia to numeric with the appropriate informat */
+    start_date_sharia = INPUT(PUT(start_date_sharia, yymmdd10.), yymmdd10.);
+RUN;
+
+PROC SQL;
+    CREATE TABLE work.new AS
+    SELECT *,
+        CASE WHEN days_between_payment_dates - (payment_date - start_date_sharia) <= 0 THEN
+                 days_between_payment_dates
+             ELSE
+                 days_between_payment_dates - (payment_date - start_date_sharia) END AS daysinone,
+        CASE WHEN payment_date - start_date_sharia < days_between_payment_dates THEN
+                 payment_date - start_date_sharia
+             ELSE 0 END AS daysintwo
+    FROM work.dim_amort a
+    LEFT JOIN work.rate2 r
+    ON a.payment_date >= r.start_date and a.payment_date < r.end_date;
+QUIT;
+-----------------------------------
+SHARIA DONE; Still need to make controls for when rate change date is on the first.
+-----------------------------------
+DATA work.rates;
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+1995-01-01 2020-02-13 0.1125 0.1175
+2020-02-13 2021-05-26 0.1175 0.1225
+2021-05-26 3000-06-01 0.1225 0.1275
+;
+
+%macro simple_amort;
+	DATA dim_amort;
+		format payment_date yymmdd10. days_between_payment_dates best12.;
+		retain prev_payment_date;
+
+		do period=0 to &total_payments.;
+			payment_date=intnx('month', &start_date., period, 'same');
+
+			if period > 0 then
+				days_between_payment_dates=intck('day', prev_payment_date, payment_date);
+			else
+				days_between_payment_dates=0;
+			prev_payment_date=payment_date;
+			payment_number=period;
+			remaining_payments=&total_payments. - period + 1;
+			OUTPUT;
+		end;
+		drop prev_payment_date;
+	run;
+
+	DATA work.rate2;
+    SET work.rates;
+
+    /* Calculate start_date_sharia by finding the beginning of the month */
+    start_date_sharia = INTNX('MONTH', start_date, 1, 'BEGIN');
+    end_date_sharia = INTNX('MONTH', end_date, 1 , 'BEGIN');
+
+    /* Apply the desired format to start_date_sharia and start_date */
+    FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+    /* Create sharia_flag variable to hold the value of the macro variable */
+    sharia_flag = "&sharia"; /* Converts macro variable to uppercase */
+
+    /* Create start_date_2 variable based on the sharia_flag variable */
+    IF sharia_flag = 'y' THEN DO;
+        ir_start_date = start_date_sharia;
+        ir_end_date = end_date_sharia;
+    END;
+    ELSE DO;
+        ir_start_date = start_date;
+        ir_end_date = end_date;
+    END;
+DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+RUN;
+
+PROC SQL;
+		CREATE TABLE work.new AS 
+		SELECT *,
+		CASE WHEN days_between_payment_dates - (payment_date - ir_start_date) <= 0 THEN days_between_payment_dates 
+		     ELSE days_between_payment_dates - (payment_date - ir_start_date) END AS daysinone,
+		CASE WHEN payment_date - ir_start_date < days_between_payment_dates THEN payment_date - ir_start_date 
+		ELSE 0 END AS daysintwo
+		FROM work.dim_amort a LEFT JOIN work.rate2 r 
+			ON a.payment_date >= r.ir_start_date and a.payment_date < r.ir_end_date;
+	QUIT;
+
+	DATA work.amort_schedule;
+		SET work.new;
+		RETAIN closing_balance;
+		lfr=LAG(first_rate);
+		lsr=LAG(second_rate);
+		first_eff_rate = lfr / 365.3 * daysinone;
+		second_eff_rate = lfr / 365.3 * daysintwo;
+
+		IF period=0 THEN
+			DO;
+				opening_balance=&loan_amount.;
+				fr_repayment=0;
+				fr_cap=0;
+				fr_int=0;
+				sr_repayment=0;
+				sr_cap=0;
+				sr_int=0;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=&loan_amount.;
+			END;
+		ELSE
+			DO;
+				opening_balance=closing_balance;
+				
+				IF daysinone = 0 THEN DO;
+				fr_repayment=0;
+				fr_int = 0;
+				END;
+				
+				ELSE DO;
+				fr_repayment=opening_balance/((1-(1+first_eff_rate)**(-remaining_payments))/(first_eff_rate))*daysinone/days_between_payment_dates;
+				fr_int = opening_balance * first_eff_rate;
+				END;
+				
+				fr_cap = fr_repayment - fr_int;
+				
+				IF daysintwo = 0 THEN DO;
+				sr_repayment=0;
+				sr_int=0;
+				END;
+				
+				ELSE DO;
+				sr_repayment=opening_balance/((1-(1+second_eff_Rate)**(-remaining_payments))/(second_eff_rate))*daysintwo/days_between_payment_dates;
+				sr_int=opening_balance*second_eff_rate;
+				END;
+				
+				sr_cap = sr_repayment - sr_int;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=opening_balance - tot_cap;
+			END;
+	run;
+
+PROC PRINT DATA=work.amort_schedule;
+VAR payment_date payment_number days_between_payment_dates 
+    ir_start_date first_rate ir_end_date second_rate lfr daysinone fr_int fr_repayment lsr daysintwo sr_int sr_repayment 
+    tot_int tot_cap tot_rep closing_balance;
+RUN;
+%mend;
+
+%let term = 3;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2019-12-14', yymmdd10.);
+%let sharia = y;
+
+%simple_amort;
+---------------------------
+Fixed rate change on the 1st issue
+TODO: Create a way to update interest rate change table....
+---------------------------
+DATA work.rates;
+infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023/05/26	3000/06/01	0.1125	0.1175
+2023/03/31	2023/05/26	0.1075	0.1125
+2023/01/27	2023/03/31	0.1050	0.1075
+2022/11/25	2023/01/27	0.0975	0.1050
+2022/09/23	2022/11/25	0.0900	0.0975
+2022/07/22	2022/09/23	0.0825	0.0900
+2022/05/20	2022/07/22	0.0775	0.0825
+2022/03/25	2022/05/20	0.0750	0.0775
+2022/01/28	2022/03/25	0.0725	0.0750
+2021/11/19	2022/01/28	0.0700	0.0725
+2020/07/24	2021/11/19	0.0725	0.0700
+2020/05/22	2020/07/24	0.0775	0.0725
+2020/04/15	2020/05/22	0.0875	0.0775
+2020/03/20	2020/04/15	0.0975	0.0875
+2020/01/17	2020/03/20	0.1000	0.0975
+2019/07/17	2020/01/17	0.1025	0.1000
+2018/11/23	2019/07/17	0.1000	0.1025
+2018/03/29	2018/11/23	0.1025	0.1000
+2017/07/21	2018/03/29	0.1050	0.1025
+2016/03/18	2017/07/21	0.1025	0.1050
+2016/01/29	2016/03/18	0.0975	0.1025
+2015/11/20	2016/01/29	0.0950	0.0975
+2015/07/24	2015/11/20	0.0925	0.0950
+2014/07/18	2015/07/24	0.0900	0.0925
+2014/01/30	2014/07/18	0.0850	0.0900
+2012/07/20	2014/01/30	0.0900	0.0850
+2010/11/19	2012/07/20	0.0950	0.0900
+2010/09/10	2010/11/19	0.1000	0.0950
+2010/03/26	2010/09/10	0.1050	0.1000
+2009/08/14	2010/03/26	0.1100	0.1050
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/03/25	2009/05/04	0.1400	0.1300
+2009/02/06	2009/03/25	0.1500	0.1400
+2008/12/12	2009/02/06	0.1550	0.1500
+2008/06/13	2008/12/12	0.1500	0.1550
+2008/04/11	2008/06/13	0.1450	0.1500
+2007/12/07	2008/04/11	0.1400	0.1450
+2007/10/12	2007/12/07	0.1350	0.1400
+2007/08/17	2007/10/12	0.1300	0.1350
+2007/06/08	2007/08/17	0.1250	0.1300
+;
+
+PROC SORT data = work.rates;
+BY start_date;
+RUN;
+
+	%macro simple_amort;
+	DATA dim_amort;
+		FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+		RETAIN prev_payment_date;
+
+		DO period=0 TO &total_payments.;
+			payment_date=INTNX('month', &start_date., period, 'same');
+
+			IF period > 0 THEN
+				days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+			ELSE
+				days_between_payment_dates=0;
+			prev_payment_date=payment_date;
+			payment_number=period;
+			remaining_payments=&total_payments. - period + 1;
+			OUTPUT;
+		END;
+		DROP prev_payment_date;
+	RUN;
+
+	DATA work.rate2;
+		SET work.rates;
+
+		/* Calculate start_date_sharia by finding the beginning of the month */
+		IF day(start_date)=1 THEN
+			DO;
+				start_date_sharia=start_date;
+			END;
+		ELSE
+			DO;
+				start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+			END;
+
+		IF DAY(end_date)=1 THEN
+			DO;
+				end_date_sharia=end_date;
+			END;
+		ELSE
+			DO;
+				end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+			END;
+
+		/* Apply the desired format to start_date_sharia and start_date */
+		FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+		/* Create sharia_flag variable to hold the value of the macro variable */
+		sharia_flag="&sharia";
+
+		/* Converts macro variable to uppercase */
+		/* Create start_date_2 variable based on the sharia_flag variable */
+		IF sharia_flag='y' THEN
+			DO;
+				ir_start_date=start_date_sharia;
+				ir_end_date=end_date_sharia;
+			END;
+		ELSE
+			DO;
+				ir_start_date=start_date;
+				ir_end_date=end_date;
+			END;
+		DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+	RUN;
+
+	PROC SQL;
+		CREATE TABLE work.new AS 
+                        SELECT *, 
+                        CASE WHEN 
+			days_between_payment_dates - (payment_date - ir_start_date) <=0 THEN 
+			days_between_payment_dates ELSE 
+			days_between_payment_dates - (payment_date - ir_start_date) END AS daysinone, 
+                        
+                        CASE WHEN 
+			payment_date - ir_start_date < days_between_payment_dates THEN 
+			payment_date - ir_start_date ELSE 0 END AS daysintwo 
+                        
+                        FROM work.dim_amort a 
+			LEFT JOIN work.rate2 r ON a.payment_date >=r.ir_start_date and 
+			a.payment_date < r.ir_end_date;
+	QUIT;
+
+	DATA work.amort_schedule;
+		SET work.new;
+		RETAIN closing_balance;
+		lfr=LAG(first_rate);
+		lsr=LAG(second_rate);
+		first_eff_rate=lfr / 365.3 * daysinone;
+		second_eff_rate=lfr / 365.3 * daysintwo;
+
+		IF period=0 THEN
+			DO;
+				opening_balance=&loan_amount.;
+				fr_repayment=0;
+				fr_cap=0;
+				fr_int=0;
+				sr_repayment=0;
+				sr_cap=0;
+				sr_int=0;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=&loan_amount.;
+			END;
+		ELSE
+			DO;
+				opening_balance=closing_balance;
+
+				IF daysinone=0 THEN
+					DO;
+						fr_repayment=0;
+						fr_int=0;
+					END;
+				ELSE
+					DO;
+						fr_repayment=opening_balance/((1-(1+first_eff_rate)**(-remaining_payments))/(first_eff_rate))*daysinone/days_between_payment_dates;
+						fr_int=opening_balance * first_eff_rate;
+					END;
+				fr_cap=fr_repayment - fr_int;
+
+				IF daysintwo=0 THEN
+					DO;
+						sr_repayment=0;
+						sr_int=0;
+					END;
+				ELSE
+					DO;
+						sr_repayment=opening_balance/((1-(1+second_eff_Rate)**(-remaining_payments))/(second_eff_rate))*daysintwo/days_between_payment_dates;
+						sr_int=opening_balance*second_eff_rate;
+					END;
+				sr_cap=sr_repayment - sr_int;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=opening_balance - tot_cap;
+			END;
+	RUN;
+
+	PROC PRINT DATA=work.amort_schedule;
+		VAR payment_date payment_number days_between_payment_dates ir_start_date 
+			first_rate ir_end_date second_rate lfr daysinone fr_int fr_repayment lsr 
+			daysintwo sr_int sr_repayment tot_int tot_cap tot_rep closing_balance;
+	RUN;
+
+%mend;
+
+%let term = 3;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2019-12-14', yymmdd10.);
+%let sharia = y;
+%simple_amort;
+---------------------------
+Beginnings of interest rate functions
+--------------------------
+%macro rates_update;
+DATA work.rates;
+IF end_date = '3000-06-01' THEN &new_interest_rate_date.;
+ELSE end_date = end_date;
+INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+DATALINES;
+&new_interest_rate_date. 3000-06-01 
+-------------------------
+FIXED interest rate misunderstanding
+------------------------
+DATA work.rates;
+infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023-05-26	3000-06-01	0.11	0.12
+2023-03-31	2023-05-26	0.11	0.11
+2023-01-27	2023-03-31	0.11	0.11
+2022-11-25	2023-01-27	0.10	0.11
+2022-09-23	2022-11-25	0.09	0.10
+2022-07-22	2022-09-23	0.08	0.09
+2022-05-20	2022-07-22	0.08	0.08
+2022-03-25	2022-05-20	0.08	0.08
+2022-01-28	2022-03-25	0.07	0.08
+2021-11-19	2022-01-28	0.07	0.07
+2020-07-24	2021-11-19	0.07	0.07
+2020-05-22	2020-07-24	0.08	0.07
+2020-04-15	2020-05-22	0.09	0.08
+2020-03-20	2020-04-15	0.10	0.09
+2020-01-17	2020-03-20	0.10	0.10
+2019-07-17	2020-01-17	0.10	0.10
+2018-11-23	2019-07-17	0.10	0.10
+2018-03-29	2018-11-23	0.10	0.10
+2017-07-21	2018-03-29	0.11	0.10
+2016-03-18	2017-07-21	0.10	0.11
+2016-01-29	2016-03-18	0.10	0.10
+2015-11-20	2016-01-29	0.10	0.10
+2015-07-24	2015-11-20	0.09	0.10
+2014-07-18	2015-07-24	0.09	0.09
+2014-01-30	2014-07-18	0.09	0.09
+2012-07-20	2014-01-30	0.09	0.09
+2010-11-19	2012-07-20	0.10	0.09
+2010-09-10	2010-11-19	0.10	0.10
+2010-03-26	2010-09-10	0.11	0.10
+2009-08-14	2010-03-26	0.11	0.11
+2009-05-29	2009-08-14	0.12	0.11
+2009-05-29	2009-08-14	0.12	0.11
+2009-03-25	2009-05-04	0.14	0.13
+2009-02-06	2009-03-25	0.15	0.14
+2008-12-12	2009-02-06	0.16	0.15
+2008-06-13	2008-12-12	0.15	0.16
+2008-04-11	2008-06-13	0.15	0.15
+2007-12-07	2008-04-11	0.14	0.15
+2007-10-12	2007-12-07	0.14	0.14
+2007-08-17	2007-10-12	0.13	0.14
+2007-06-08	2007-08-17	0.13	0.13
+;
+
+PROC SORT data = work.rates;
+BY start_date;
+RUN;
+
+	%macro simple_amort;
+	DATA dim_amort;
+		FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+		RETAIN prev_payment_date;
+
+		DO period=0 TO &total_payments.;
+			payment_date=INTNX('month', &start_date., period, 'same');
+
+			IF period > 0 THEN
+				days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+			ELSE
+				days_between_payment_dates=0;
+			prev_payment_date=payment_date;
+			payment_number=period;
+			remaining_payments=&total_payments. - period + 1;
+			OUTPUT;
+		END;
+		DROP prev_payment_date;
+	RUN;
+
+	DATA work.rate2;
+		SET work.rates;
+
+		/* Calculate start_date_sharia by finding the beginning of the month */
+		IF day(start_date)=1 THEN
+			DO;
+				start_date_sharia=start_date;
+			END;
+		ELSE
+			DO;
+				start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+			END;
+
+		IF DAY(end_date)=1 THEN
+			DO;
+				end_date_sharia=end_date;
+			END;
+		ELSE
+			DO;
+				end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+			END;
+
+		/* Apply the desired format to start_date_sharia and start_date */
+		FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+		/* Create sharia_flag variable to hold the value of the macro variable */
+		sharia_flag="&sharia";
+
+		/* Converts macro variable to uppercase */
+		/* Create start_date_2 variable based on the sharia_flag variable */
+		IF sharia_flag='y' THEN
+			DO;
+				ir_start_date=start_date_sharia;
+				ir_end_date=end_date_sharia;
+			END;
+		ELSE
+			DO;
+				ir_start_date=start_date;
+				ir_end_date=end_date;
+			END;
+		DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+	RUN;
+
+	PROC SQL;
+		CREATE TABLE work.new AS 
+                        SELECT *, 
+                        CASE WHEN 
+			days_between_payment_dates - (payment_date - ir_start_date) <=0 THEN 
+			days_between_payment_dates ELSE 
+			days_between_payment_dates - (payment_date - ir_start_date) END AS daysinone, 
+                        
+                        CASE WHEN 
+			payment_date - ir_start_date < days_between_payment_dates THEN 
+			payment_date - ir_start_date ELSE 0 END AS daysintwo 
+                        
+                        FROM work.dim_amort a 
+			LEFT JOIN work.rate2 r ON a.payment_date >=r.ir_start_date and 
+			a.payment_date < r.ir_end_date;
+	QUIT;
+
+	DATA work.amort_schedule;
+		SET work.new;
+		RETAIN closing_balance;
+		first_eff_rate_Rchange=first_rate / 365 * daysinone;
+		second_eff_rate_Rchange=second_rate / 365 * daysintwo;
+		eff_rate_noRchange = second_rate / 365 * daysinone;
+
+		IF period=0 THEN
+			DO;
+				opening_balance=&loan_amount.;
+				fr_repayment=0;
+				fr_cap=0;
+				fr_int=0;
+				sr_repayment=0;
+				sr_cap=0;
+				sr_int=0;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=&loan_amount.;
+			END;
+		ELSE
+			DO;
+				opening_balance=closing_balance;
+
+				IF daysinone=0 THEN
+					DO;
+						fr_repayment=0;
+						fr_int=0;
+					END;
+				ELSE IF daysinone = days_between_payment_dates THEN DO;
+				fr_repayment=opening_balance/((1-(1+eff_rate_noRchange)**(-remaining_payments))/(eff_rate_noRchange))*daysinone/days_between_payment_dates;
+						fr_int=opening_balance * eff_rate_noRchange;
+				END;
+				ELSE
+					DO;
+						fr_repayment=opening_balance/((1-(1+first_eff_rate_Rchange)**(-remaining_payments))/(first_eff_rate_Rchange))*daysinone/days_between_payment_dates;
+						fr_int=opening_balance * first_eff_rate_Rchange;
+					END;
+				fr_cap=fr_repayment - fr_int;
+
+				IF daysintwo=0 THEN
+					DO;
+						sr_repayment=0;
+						sr_int=0;
+					END;
+				ELSE
+					DO;
+						sr_repayment=opening_balance/((1-(1+second_eff_rate_Rchange)**(-remaining_payments))/(second_eff_rate_Rchange))*daysintwo/days_between_payment_dates;
+						sr_int=opening_balance*second_eff_rate_Rchange;
+					END;
+				sr_cap=sr_repayment - sr_int;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=opening_balance - tot_cap;
+			END;
+	RUN;
+
+	PROC PRINT DATA=work.amort_schedule;
+		VAR payment_date payment_number days_between_payment_dates ir_start_date 
+			first_rate ir_end_date second_rate daysinone fr_int fr_repayment  
+			daysintwo sr_int sr_repayment tot_int tot_cap tot_rep closing_balance;
+	RUN;
+
+%mend;
+
+%let term = 3;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2019-12-14', yymmdd10.);
+%let sharia = n;
+%simple_amort;
+----------------------------
+Fixed variable payment frequency problem
+-----------------------------
+
+DATA work.rates;
+infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023-05-26	3000-06-01	0.11	0.12
+2023-03-31	2023-05-26	0.11	0.11
+2023-01-27	2023-03-31	0.11	0.11
+2022-11-25	2023-01-27	0.10	0.11
+2022-09-23	2022-11-25	0.09	0.10
+2022-07-22	2022-09-23	0.08	0.09
+2022-05-20	2022-07-22	0.08	0.08
+2022-03-25	2022-05-20	0.08	0.08
+2022-01-28	2022-03-25	0.07	0.08
+2021-11-19	2022-01-28	0.07	0.07
+2020-07-24	2021-11-19	0.07	0.07
+2020-05-22	2020-07-24	0.08	0.07
+2020-04-15	2020-05-22	0.09	0.08
+2020-03-20	2020-04-15	0.10	0.09
+2020-01-17	2020-03-20	0.10	0.10
+2019-07-17	2020-01-17	0.10	0.10
+2018-11-23	2019-07-17	0.10	0.10
+2018-03-29	2018-11-23	0.10	0.10
+2017-07-21	2018-03-29	0.11	0.10
+2016-03-18	2017-07-21	0.10	0.11
+2016-01-29	2016-03-18	0.10	0.10
+2015-11-20	2016-01-29	0.10	0.10
+2015-07-24	2015-11-20	0.09	0.10
+2014-07-18	2015-07-24	0.09	0.09
+2014-01-30	2014-07-18	0.09	0.09
+2012-07-20	2014-01-30	0.09	0.09
+2010-11-19	2012-07-20	0.10	0.09
+2010-09-10	2010-11-19	0.10	0.10
+2010-03-26	2010-09-10	0.11	0.10
+2009-08-14	2010-03-26	0.11	0.11
+2009-05-29	2009-08-14	0.12	0.11
+2009-05-29	2009-08-14	0.12	0.11
+2009-03-25	2009-05-04	0.14	0.13
+2009-02-06	2009-03-25	0.15	0.14
+2008-12-12	2009-02-06	0.16	0.15
+2008-06-13	2008-12-12	0.15	0.16
+2008-04-11	2008-06-13	0.15	0.15
+2007-12-07	2008-04-11	0.14	0.15
+2007-10-12	2007-12-07	0.14	0.14
+2007-08-17	2007-10-12	0.13	0.14
+2007-06-08	2007-08-17	0.13	0.13
+;
+
+PROC SORT data = work.rates;
+BY start_date;
+RUN;
+
+	%macro simple_amort;
+	DATA dim_amort;
+		FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+		RETAIN prev_payment_date;
+
+		DO period=0 TO &total_payments.;
+			payment_date=INTNX('month', &start_date., period/&pp.*12, 'same');
+
+			IF period > 0 THEN
+				days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+			ELSE
+				days_between_payment_dates=0;
+			prev_payment_date=payment_date;
+			payment_number=period;
+			remaining_payments=&total_payments. - period + 1;
+			OUTPUT;
+		END;
+		DROP prev_payment_date;
+	RUN;
+
+	DATA work.rate2;
+		SET work.rates;
+
+		/* Calculate start_date_sharia by finding the beginning of the month */
+		IF day(start_date)=1 THEN
+			DO;
+				start_date_sharia=start_date;
+			END;
+		ELSE
+			DO;
+				start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+			END;
+
+		IF DAY(end_date)=1 THEN
+			DO;
+				end_date_sharia=end_date;
+			END;
+		ELSE
+			DO;
+				end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+			END;
+
+		/* Apply the desired format to start_date_sharia and start_date */
+		FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+		/* Create sharia_flag variable to hold the value of the macro variable */
+		sharia_flag="&sharia";
+
+		/* Converts macro variable to uppercase */
+		/* Create start_date_2 variable based on the sharia_flag variable */
+		IF sharia_flag='y' THEN
+			DO;
+				ir_start_date=start_date_sharia;
+				ir_end_date=end_date_sharia;
+			END;
+		ELSE
+			DO;
+				ir_start_date=start_date;
+				ir_end_date=end_date;
+			END;
+		DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+	RUN;
+
+	PROC SQL;
+		CREATE TABLE work.new AS 
+                        SELECT *, 
+                        CASE WHEN 
+			days_between_payment_dates - (payment_date - ir_start_date) <=0 THEN 
+			days_between_payment_dates ELSE 
+			days_between_payment_dates - (payment_date - ir_start_date) END AS daysinone, 
+                        
+                        CASE WHEN 
+			payment_date - ir_start_date < days_between_payment_dates THEN 
+			payment_date - ir_start_date ELSE 0 END AS daysintwo 
+                        
+                        FROM work.dim_amort a 
+			LEFT JOIN work.rate2 r ON a.payment_date >=r.ir_start_date and 
+			a.payment_date < r.ir_end_date;
+	QUIT;
+
+	DATA work.amort_schedule;
+		SET work.new;
+		RETAIN closing_balance;
+		first_eff_rate_Rchange=first_rate / 365 * daysinone;
+		second_eff_rate_Rchange=second_rate / 365 * daysintwo;
+		eff_rate_noRchange = second_rate / 365 * daysinone;
+
+		IF period=0 THEN
+			DO;
+				opening_balance=&loan_amount.;
+				fr_repayment=0;
+				fr_cap=0;
+				fr_int=0;
+				sr_repayment=0;
+				sr_cap=0;
+				sr_int=0;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=&loan_amount.;
+			END;
+		ELSE
+			DO;
+				opening_balance=closing_balance;
+
+				IF daysinone=0 THEN
+					DO;
+						fr_repayment=0;
+						fr_int=0;
+					END;
+				ELSE IF daysinone = days_between_payment_dates THEN DO;
+				fr_repayment=opening_balance/((1-(1+eff_rate_noRchange)**(-remaining_payments))/(eff_rate_noRchange))*daysinone/days_between_payment_dates;
+						fr_int=opening_balance * eff_rate_noRchange;
+				END;
+				ELSE
+					DO;
+						fr_repayment=opening_balance/((1-(1+first_eff_rate_Rchange)**(-remaining_payments))/(first_eff_rate_Rchange))*daysinone/days_between_payment_dates;
+						fr_int=opening_balance * first_eff_rate_Rchange;
+					END;
+				fr_cap=fr_repayment - fr_int;
+
+				IF daysintwo=0 THEN
+					DO;
+						sr_repayment=0;
+						sr_int=0;
+					END;
+				ELSE
+					DO;
+						sr_repayment=opening_balance/((1-(1+second_eff_rate_Rchange)**(-remaining_payments))/(second_eff_rate_Rchange))*daysintwo/days_between_payment_dates;
+						sr_int=opening_balance*second_eff_rate_Rchange;
+					END;
+				sr_cap=sr_repayment - sr_int;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=opening_balance - tot_cap;
+			END;
+	RUN;
+
+	PROC PRINT DATA=work.amort_schedule;
+		VAR payment_date payment_number days_between_payment_dates ir_start_date 
+			first_rate ir_end_date second_rate daysinone fr_int fr_repayment  
+			daysintwo sr_int sr_repayment tot_int tot_cap tot_rep closing_balance;
+	RUN;
+
+%mend;
+
+%let term = 3;
+%let pp = 4;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2019-12-14', yymmdd10.);
+%let sharia = n;
+%simple_amort;
+
+
+
+---------------------------------
+function now takes inputs
+---------------------------------
+/* Creating the historic interest rate table. start_date indicates the last day in which the first_rate is applicable,
+and end_date indicates the last day in which second_rate is applicable */
+DATA work.rates;
+infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;2023/05/26	3000/06/01	0.1125	0.1175
+2023/03/31	2023/05/26	0.1075	0.1125
+2023/01/27	2023/03/31	0.1050	0.1075
+2022/11/25	2023/01/27	0.0975	0.1050
+2022/09/23	2022/11/25	0.0900	0.0975
+2022/07/22	2022/09/23	0.0825	0.0900
+2022/05/20	2022/07/22	0.0775	0.0825
+2022/03/25	2022/05/20	0.0750	0.0775
+2022/01/28	2022/03/25	0.0725	0.0750
+2021/11/19	2022/01/28	0.0700	0.0725
+2020/07/24	2021/11/19	0.0725	0.0700
+2020/05/22	2020/07/24	0.0775	0.0725
+2020/04/15	2020/05/22	0.0875	0.0775
+2020/03/20	2020/04/15	0.0975	0.0875
+2020/01/17	2020/03/20	0.1000	0.0975
+2019/07/17	2020/01/17	0.1025	0.1000
+2018/11/23	2019/07/17	0.1000	0.1025
+2018/03/29	2018/11/23	0.1025	0.1000
+2017/07/21	2018/03/29	0.1050	0.1025
+2016/03/18	2017/07/21	0.1025	0.1050
+2016/01/29	2016/03/18	0.0975	0.1025
+2015/11/20	2016/01/29	0.0950	0.0975
+2015/07/24	2015/11/20	0.0925	0.0950
+2014/07/18	2015/07/24	0.0900	0.0925
+2014/01/30	2014/07/18	0.0850	0.0900
+2012/07/20	2014/01/30	0.0900	0.0850
+2010/11/19	2012/07/20	0.0950	0.0900
+2010/09/10	2010/11/19	0.1000	0.0950
+2010/03/26	2010/09/10	0.1050	0.1000
+2009/08/14	2010/03/26	0.1100	0.1050
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/03/25	2009/05/04	0.1400	0.1300
+2009/02/06	2009/03/25	0.1500	0.1400
+2008/12/12	2009/02/06	0.1550	0.1500
+2008/06/13	2008/12/12	0.1500	0.1550
+2008/04/11	2008/06/13	0.1450	0.1500
+2007/12/07	2008/04/11	0.1400	0.1450
+2007/10/12	2007/12/07	0.1350	0.1400
+2007/08/17	2007/10/12	0.1300	0.1350
+2007/06/08	2007/08/17	0.1250	0.1300
+
+;
+
+PROC SORT data = work.rates;
+BY start_date;
+RUN;
+
+/*Making the straight amort macro function*/
+	%macro simple_amort(term, pp, loan_amount, start_date, sharia);
+	
+/* This data step creates the dimensions of the amort (eg. payment dates, payment numbers) using a for loop. Where we
+loop through the number of payments */ 
+	DATA dim_amort;
+		FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+		RETAIN prev_payment_date;
+
+		DO period=0 TO &term.*&pp.;
+			payment_date=INTNX('month', &start_date., period/&pp.*12, 'same');
+
+			IF period > 0 THEN
+				days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+			ELSE
+				days_between_payment_dates=0;
+			prev_payment_date=payment_date;
+			payment_number=period;
+			remaining_payments=&term.*&pp. - period + 1;
+			OUTPUT;
+		END;
+		DROP prev_payment_date;
+	RUN;
+
+/* In creating work rates 2 we modify the interest rate table account for Sharia dates. */
+	DATA work.rate2;
+		SET work.rates;
+
+/* Calculate start_date_sharia by finding the beginning of the next month.
+I use a case statement to make exceptions for when the day of the month is the 1st.*/
+		IF DAY(start_date)=1 THEN
+			DO;
+				start_date_sharia=start_date;
+			END;
+		ELSE
+			DO;
+				start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+			END;
+
+/* Same step as above but now for end_dates*/
+		IF DAY(end_date)=1 THEN
+			DO;
+				end_date_sharia=end_date;
+			END;
+		ELSE
+			DO;
+				end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+			END;
+
+/* Applying the desired format to each date column*/
+		FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+/* Creating sharia_flag variable to that indicates Sharia using the macro variable */
+		sharia_flag="&sharia";
+
+/* Creating the interest rate start and end dates (ir_X_date) that is appropriate to the Sharia status of the loan.
+These are the dates that will be used when joining to the dim_amort table. */
+		IF sharia_flag='y' THEN
+			DO;
+				ir_start_date=start_date_sharia;
+				ir_end_date=end_date_sharia;
+			END;
+		ELSE
+			DO;
+				ir_start_date=start_date;
+				ir_end_date=end_date;
+			END;
+		DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+	RUN;
+
+/* Creating the join between dim_amort and rates2. This process will also calculate the number of days each payment experiences in each interest rate. */
+	PROC SQL;
+		CREATE TABLE work.dim_rates_amort AS 
+                        SELECT *,
+/* days count is done in these case statements daysinone = days in first interest rate, daysintwo = days in second interest rate */
+                        CASE WHEN 
+			days_between_payment_dates - (payment_date - ir_start_date) <=0 THEN 
+			days_between_payment_dates ELSE 
+			days_between_payment_dates - (payment_date - ir_start_date) END AS daysinone, 
+                        
+                        CASE WHEN 
+			payment_date - ir_start_date < days_between_payment_dates THEN 
+			payment_date - ir_start_date ELSE 0 END AS daysintwo 
+                        
+                        FROM work.dim_amort a 
+/* I use a left join because the loan dimensions must always be kept. When the payment date is in between the interest rate change dates
+we know that the relevant rate will be joined to each payment date. */
+			LEFT JOIN work.rate2 r ON a.payment_date >=r.ir_start_date and 
+			a.payment_date < r.ir_end_date;
+	QUIT;
+
+/* This data step uses a for loop to create the actual amort schedule. */
+
+	DATA work.amort_schedule;
+		SET work.dim_rates_amort;
+
+/* The previous closing balance needs to be retained throughout the for loop so that the next opening balance can use that value */
+		RETAIN closing_balance;
+
+/* First work out effective interest rates to simplify repayment and interest formulas. Suffix 'Rchange' indicates that these rates are used 
+when there is a rate change. 'noRchange' is the rate used when there is no rate change. */
+		first_eff_rate_Rchange=first_rate / 365 * daysinone;
+		second_eff_rate_Rchange=second_rate / 365 * daysintwo;
+		eff_rate_noRchange = second_rate / 365 * daysinone;
+
+/* We use a case statement to check when the period is 0 as this needs to reflect the initial condition of the loan.
+
+fr_repayment = repayment amount under first rate
+fr_cap = capital portion of repayment under first rate
+fr_int = interest portion of repayment under first rate
+
+sr_X = fr equivalents just under the second interest rate.*/
+
+		IF period=0 THEN
+			DO;
+				opening_balance=&loan_amount.;
+				fr_repayment=0;
+				fr_cap=0;
+				fr_int=0;
+				sr_repayment=0;
+				sr_cap=0;
+				sr_int=0;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=&loan_amount.;
+			END;
+
+/* Now we begin to create the actual amort schedule. */
+		ELSE
+			DO;
+				opening_balance=closing_balance;
+
+				IF daysinone=0 THEN
+					DO;
+						fr_repayment=0;
+						fr_int=0;
+					END;
+
+/* When daysinone = days_between_payments, then we want to use the 2nd rate as there was no rate change experienced. */
+				ELSE IF daysinone = days_between_payment_dates THEN DO;
+				fr_repayment=opening_balance/((1-(1+eff_rate_noRchange)**(-remaining_payments))/(eff_rate_noRchange))*daysinone/days_between_payment_dates;
+						fr_int=opening_balance * eff_rate_noRchange;
+				END;
+/* Otherwise, there was a rate change and we will use the first rate. */
+				ELSE
+					DO;
+						fr_repayment=opening_balance/((1-(1+first_eff_rate_Rchange)**(-remaining_payments))/(first_eff_rate_Rchange))*daysinone/days_between_payment_dates;
+						fr_int=opening_balance * first_eff_rate_Rchange;
+					END;
+				fr_cap=fr_repayment - fr_int;
+
+/* If daysintwo=0 then there was no rate changes, so sr_X should be 0 */
+				IF daysintwo=0 THEN
+					DO;
+						sr_repayment=0;
+						sr_int=0;
+					END;
+/* Otherwise there was a rate change and sr_X needs to be calculated. */
+				ELSE
+					DO;
+						sr_repayment=opening_balance/((1-(1+second_eff_rate_Rchange)**(-remaining_payments))/(second_eff_rate_Rchange))*daysintwo/days_between_payment_dates;
+						sr_int=opening_balance*second_eff_rate_Rchange;
+					END;
+				sr_cap=sr_repayment - sr_int;
+
+/* calculating totals */
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=opening_balance - tot_cap;
+			END;
+	RUN;
+
+
+/* printing the resulting amort schedule */
+	PROC PRINT DATA=work.amort_schedule;
+		VAR payment_date payment_number days_between_payment_dates ir_start_date 
+			first_rate ir_end_date second_rate daysinone fr_int fr_repayment  
+			daysintwo sr_int sr_repayment tot_int tot_cap tot_rep closing_balance;
+	RUN;
+
+%mend;
+/*
+%let term = 3;
+	%let pp = 12;
+	%let total_payments = &term. * &pp.;
+	%let loan_amount = 1000000;
+	%let start_date = input('2019-12-14', yymmdd10.);
+	%let sharia = n;
+	*/
+%simple_amort(3, 12, 100000, '14DEC2019'd, n);
+
+----------------------------
+Trying to fix low frequency payments and variable rate disagreement
+-----------------------------
+%let term = 3;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2019-12-14', yymmdd10.);
+%let sharia = y;
+
+DATA work.rates;
+	infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023-05-26	3000-06-01	0.11	0.12
+2023-03-31	2023-05-26	0.11	0.11
+2023-01-27	2023-03-31	0.11	0.11
+2022-11-25	2023-01-27	0.10	0.11
+2022-09-23	2022-11-25	0.09	0.10
+2022-07-22	2022-09-23	0.08	0.09
+2022-05-20	2022-07-22	0.08	0.08
+2022-03-25	2022-05-20	0.08	0.08
+2022-01-28	2022-03-25	0.07	0.08
+2021-11-19	2022-01-28	0.07	0.07
+2020-07-24	2021-11-19	0.07	0.07
+2020-05-22	2020-07-24	0.08	0.07
+2020-04-15	2020-05-22	0.09	0.08
+2020-03-20	2020-04-15	0.10	0.09
+2020-01-17	2020-03-20	0.10	0.10
+2019-07-17	2020-01-17	0.10	0.10
+2018-11-23	2019-07-17	0.10	0.10
+2018-03-29	2018-11-23	0.10	0.10
+2017-07-21	2018-03-29	0.11	0.10
+2016-03-18	2017-07-21	0.10	0.11
+2016-01-29	2016-03-18	0.10	0.10
+2015-11-20	2016-01-29	0.10	0.10
+2015-07-24	2015-11-20	0.09	0.10
+2014-07-18	2015-07-24	0.09	0.09
+2014-01-30	2014-07-18	0.09	0.09
+2012-07-20	2014-01-30	0.09	0.09
+2010-11-19	2012-07-20	0.10	0.09
+2010-09-10	2010-11-19	0.10	0.10
+2010-03-26	2010-09-10	0.11	0.10
+2009-08-14	2010-03-26	0.11	0.11
+2009-05-29	2009-08-14	0.12	0.11
+2009-05-29	2009-08-14	0.12	0.11
+2009-03-25	2009-05-04	0.14	0.13
+2009-02-06	2009-03-25	0.15	0.14
+2008-12-12	2009-02-06	0.16	0.15
+2008-06-13	2008-12-12	0.15	0.16
+2008-04-11	2008-06-13	0.15	0.15
+2007-12-07	2008-04-11	0.14	0.15
+2007-10-12	2007-12-07	0.14	0.14
+2007-08-17	2007-10-12	0.13	0.14
+2007-06-08	2007-08-17	0.13	0.13
+;
+
+PROC SORT data=work.rates;
+	BY start_date;
+RUN;
+
+DATA dim_amort;
+	FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+    RETAIN prev_payment_date;
+	DO period=0 TO &term.*&pp.;
+		payment_date=INTNX('month', &start_date., period/&pp.*12, 'same');
+
+		IF period > 0 THEN
+			days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+		ELSE
+			days_between_payment_dates=0;
+		prev_payment_date=payment_date;
+		previous_payment_date = LAG(payment_date);
+		payment_number=period;
+		remaining_payments=&term.*&pp. - period + 1;
+		OUTPUT;
+	END;
+	DROP prev_payment_date;
+RUN;
+
+DATA work.rate2;
+	SET work.rates;
+
+	/* Calculate start_date_sharia by finding the beginning of the month */
+	IF day(start_date)=1 THEN
+		DO;
+			start_date_sharia=start_date;
+		END;
+	ELSE
+		DO;
+			start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+		END;
+
+	IF DAY(end_date)=1 THEN
+		DO;
+			end_date_sharia=end_date;
+		END;
+	ELSE
+		DO;
+			end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+		END;
+
+	/* Apply the desired format to start_date_sharia and start_date */
+	FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+	/* Create sharia_flag variable to hold the value of the macro variable */
+	sharia_flag="&sharia";
+
+	/* Converts macro variable to uppercase */
+	/* Create start_date_2 variable based on the sharia_flag variable */
+	IF sharia_flag='y' THEN
+		DO;
+			ir_start_date=start_date_sharia;
+			ir_end_date=end_date_sharia;
+		END;
+	ELSE
+		DO;
+			ir_start_date=start_date;
+			ir_end_date=end_date;
+		END;
+	DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+RUN;
+
+PROC SQL;
+	CREATE TABLE work.new AS SELECT *, CASE WHEN 
+		days_between_payment_dates - (payment_date - ir_start_date) <=0 THEN 
+		days_between_payment_dates ELSE 
+		days_between_payment_dates - (payment_date - ir_start_date) END AS daysinone, 
+		CASE WHEN payment_date - ir_start_date < days_between_payment_dates THEN 
+		payment_date - ir_start_date ELSE 0 END AS daysintwo FROM work.dim_amort a 
+		LEFT JOIN work.rate2 r ON a.payment_date >=r.ir_start_date AND a.previous_payment_date < r.ir_end_date
+		AND a.previous_payment_date < r.ir_start_date;
+QUIT;
+PROC SORT DATA = work.new;
+BY payment_number;
+RUN;
+PROC PRINT DATA = work.new;
+FORMAT previous_payment_date yymmdd10.;
+VAR payment_number previous_payment_date payment_date days_between_payment_dates ir_start_date ir_end_date daysinone daysintwo;
+
+RUN;
+-------------
+New date join rule, using case statements. But we have an issue where for higher freq payments there are double reps? Still need to check if the double reps are real...
+---------------------------------------------
+
+%let term = 3;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2019-12-14', yymmdd10.);
+%let sharia = y;
+
+DATA work.rates;
+	infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023-05-26	3000-06-01	0.11	0.12
+2023-03-31	2023-05-26	0.11	0.11
+2023-01-27	2023-03-31	0.11	0.11
+2022-11-25	2023-01-27	0.10	0.11
+2022-09-23	2022-11-25	0.09	0.10
+2022-07-22	2022-09-23	0.08	0.09
+2022-05-20	2022-07-22	0.08	0.08
+2022-03-25	2022-05-20	0.08	0.08
+2022-01-28	2022-03-25	0.07	0.08
+2021-11-19	2022-01-28	0.07	0.07
+2020-07-24	2021-11-19	0.07	0.07
+2020-05-22	2020-07-24	0.08	0.07
+2020-04-15	2020-05-22	0.09	0.08
+2020-03-20	2020-04-15	0.10	0.09
+2020-01-17	2020-03-20	0.10	0.10
+2019-07-17	2020-01-17	0.10	0.10
+2018-11-23	2019-07-17	0.10	0.10
+2018-03-29	2018-11-23	0.10	0.10
+2017-07-21	2018-03-29	0.11	0.10
+2016-03-18	2017-07-21	0.10	0.11
+2016-01-29	2016-03-18	0.10	0.10
+2015-11-20	2016-01-29	0.10	0.10
+2015-07-24	2015-11-20	0.09	0.10
+2014-07-18	2015-07-24	0.09	0.09
+2014-01-30	2014-07-18	0.09	0.09
+2012-07-20	2014-01-30	0.09	0.09
+2010-11-19	2012-07-20	0.10	0.09
+2010-09-10	2010-11-19	0.10	0.10
+2010-03-26	2010-09-10	0.11	0.10
+2009-08-14	2010-03-26	0.11	0.11
+2009-05-29	2009-08-14	0.12	0.11
+2009-05-29	2009-08-14	0.12	0.11
+2009-03-25	2009-05-04	0.14	0.13
+2009-02-06	2009-03-25	0.15	0.14
+2008-12-12	2009-02-06	0.16	0.15
+2008-06-13	2008-12-12	0.15	0.16
+2008-04-11	2008-06-13	0.15	0.15
+2007-12-07	2008-04-11	0.14	0.15
+2007-10-12	2007-12-07	0.14	0.14
+2007-08-17	2007-10-12	0.13	0.14
+2007-06-08	2007-08-17	0.13	0.13
+;
+
+PROC SORT data=work.rates;
+	BY start_date;
+RUN;
+
+DATA dim_amort;
+	FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+    RETAIN prev_payment_date;
+	DO period=0 TO &term.*&pp.;
+		payment_date=INTNX('month', &start_date., period/&pp.*12, 'same');
+
+		IF period > 0 THEN
+			days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+		ELSE
+			days_between_payment_dates=0;
+		prev_payment_date=payment_date;
+		previous_payment_date = LAG(payment_date);
+		payment_number=period;
+		remaining_payments=&term.*&pp. - period + 1;
+		OUTPUT;
+	END;
+	DROP prev_payment_date;
+RUN;
+
+DATA work.rate2;
+	SET work.rates;
+
+	/* Calculate start_date_sharia by finding the beginning of the month */
+	IF day(start_date)=1 THEN
+		DO;
+			start_date_sharia=start_date;
+		END;
+	ELSE
+		DO;
+			start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+		END;
+
+	IF DAY(end_date)=1 THEN
+		DO;
+			end_date_sharia=end_date;
+		END;
+	ELSE
+		DO;
+			end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+		END;
+
+	/* Apply the desired format to start_date_sharia and start_date */
+	FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+	/* Create sharia_flag variable to hold the value of the macro variable */
+	sharia_flag="&sharia";
+
+	/* Converts macro variable to uppercase */
+	/* Create start_date_2 variable based on the sharia_flag variable */
+	IF sharia_flag='y' THEN
+		DO;
+			ir_start_date=start_date_sharia;
+			ir_end_date=end_date_sharia;
+		END;
+	ELSE
+		DO;
+			ir_start_date=start_date;
+			ir_end_date=end_date;
+		END;
+	DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+RUN;
+
+PROC SQL;
+	CREATE TABLE work.new AS 
+	  SELECT *, 
+	         CASE WHEN r.ir_start_date < a.previous_payment_date AND r.ir_end_date < a.previous_payment_date THEN 0
+	              WHEN r.ir_start_date < a.previous_payment_date AND r.ir_end_date > a.previous_payment_date THEN 1
+	              WHEN r.ir_start_date > a.previous_payment_date AND r.ir_end_date < a.payment_date THEN 12
+	              WHEN r.ir_start_date < a.payment_date AND r.ir_end_date > a.payment_date THEN 12 
+	              WHEN r.ir_start_date < a.previous_payment_date AND r.ir_end_date > a.payment_date THEN 1
+	              ELSE 8 END AS ir_flag
+		FROM work.dim_amort a 
+		LEFT JOIN work.rate2 r ON r.ir_start_date <= a.payment_date;
+QUIT;
+PROC SORT DATA = work.new;
+BY payment_number;
+RUN;
+PROC PRINT DATA = work.new;
+FORMAT previous_payment_date yymmdd10.;
+VAR payment_number previous_payment_date payment_date days_between_payment_dates ir_start_date ir_end_date ir_flag;
+
+RUN;
+------------------
+Think the joins have been fixed using more elegant case statement solution.
+------------------
+%let term = 3;
+%let pp = 1;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2020-12-14', yymmdd10.);
+%let sharia = y;
+
+DATA work.rates;
+	infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023/05/26	3000/06/01	0.1125	0.1175
+2023/03/31	2023/05/26	0.1075	0.1125
+2023/01/27	2023/03/31	0.1050	0.1075
+2022/11/25	2023/01/27	0.0975	0.1050
+2022/09/23	2022/11/25	0.0900	0.0975
+2022/07/22	2022/09/23	0.0825	0.0900
+2022/05/20	2022/07/22	0.0775	0.0825
+2022/03/25	2022/05/20	0.0750	0.0775
+2022/01/28	2022/03/25	0.0725	0.0750
+2021/11/19	2022/01/28	0.0700	0.0725
+2020/07/24	2021/11/19	0.0725	0.0700
+2020/05/22	2020/07/24	0.0775	0.0725
+2020/04/15	2020/05/22	0.0875	0.0775
+2020/03/20	2020/04/15	0.0975	0.0875
+2020/01/17	2020/03/20	0.1000	0.0975
+2019/07/17	2020/01/17	0.1025	0.1000
+2018/11/23	2019/07/17	0.1000	0.1025
+2018/03/29	2018/11/23	0.1025	0.1000
+2017/07/21	2018/03/29	0.1050	0.1025
+2016/03/18	2017/07/21	0.1025	0.1050
+2016/01/29	2016/03/18	0.0975	0.1025
+2015/11/20	2016/01/29	0.0950	0.0975
+2015/07/24	2015/11/20	0.0925	0.0950
+2014/07/18	2015/07/24	0.0900	0.0925
+2014/01/30	2014/07/18	0.0850	0.0900
+2012/07/20	2014/01/30	0.0900	0.0850
+2010/11/19	2012/07/20	0.0950	0.0900
+2010/09/10	2010/11/19	0.1000	0.0950
+2010/03/26	2010/09/10	0.1050	0.1000
+2009/08/14	2010/03/26	0.1100	0.1050
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/03/25	2009/05/04	0.1400	0.1300
+2009/02/06	2009/03/25	0.1500	0.1400
+2008/12/12	2009/02/06	0.1550	0.1500
+2008/06/13	2008/12/12	0.1500	0.1550
+2008/04/11	2008/06/13	0.1450	0.1500
+2007/12/07	2008/04/11	0.1400	0.1450
+2007/10/12	2007/12/07	0.1350	0.1400
+2007/08/17	2007/10/12	0.1300	0.1350
+2007/06/08	2007/08/17	0.1250	0.1300
+
+;
+
+PROC SORT data=work.rates;
+	BY start_date;
+RUN;
+
+DATA dim_amort;
+	FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+    RETAIN prev_payment_date;
+	DO period=0 TO &term.*&pp.;
+		payment_date=INTNX('month', &start_date., period/&pp.*12, 'same');
+
+		IF period > 0 THEN
+			days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+		ELSE
+			days_between_payment_dates=0;
+		prev_payment_date=payment_date;
+		previous_payment_date = LAG(payment_date);
+		payment_number=period;
+		remaining_payments=&term.*&pp. - period + 1;
+		OUTPUT;
+	END;
+	DROP prev_payment_date;
+RUN;
+
+DATA work.rate2;
+	SET work.rates;
+
+	/* Calculate start_date_sharia by finding the beginning of the month */
+	IF day(start_date)=1 THEN
+		DO;
+			start_date_sharia=start_date;
+		END;
+	ELSE
+		DO;
+			start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+		END;
+
+	IF DAY(end_date)=1 THEN
+		DO;
+			end_date_sharia=end_date;
+		END;
+	ELSE
+		DO;
+			end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+		END;
+
+	/* Apply the desired format to start_date_sharia and start_date */
+	FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+	/* Create sharia_flag variable to hold the value of the macro variable */
+	sharia_flag="&sharia";
+
+	/* Converts macro variable to uppercase */
+	/* Create start_date_2 variable based on the sharia_flag variable */
+	IF sharia_flag='y' THEN
+		DO;
+			ir_start_date=start_date_sharia;
+			ir_end_date=end_date_sharia;
+		END;
+	ELSE
+		DO;
+			ir_start_date=start_date;
+			ir_end_date=end_date;
+		END;
+	DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+RUN;
+
+PROC SQL;
+	CREATE TABLE work.new AS 
+	  SELECT *, 
+	         CASE WHEN r.ir_start_date >= a.previous_payment_date AND r.ir_end_date <= a.payment_date THEN 1
+	              WHEN r.ir_start_date <= a.payment_date AND r.ir_end_date >= a.payment_date THEN 1
+	              ELSE 0 END AS ir_flag
+		FROM work.dim_amort a 
+		LEFT JOIN work.rate2 r
+		ON r.ir_start_date < a.payment_date;
+QUIT;
+PROC SORT DATA = work.new;
+BY payment_number;
+RUN;
+PROC PRINT DATA = work.new;
+FORMAT previous_payment_date yymmdd10.;
+VAR payment_number previous_payment_date payment_date  ir_start_date ir_end_date ir_flag first_rate second_rate;
+WHERE payment_number > 0 ;
+
+RUN;
+-------------------------------------------
+IR change dates are working.
+Now need to recalculate days in each ir regime
+------------------------------------------
+%let term = 3;
+%let pp = 1;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2020-12-14', yymmdd10.);
+%let sharia = n;
+
+DATA work.rates;
+	infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023/05/26	3000/06/01	0.1125	0.1175
+2023/03/31	2023/05/26	0.1075	0.1125
+2023/01/27	2023/03/31	0.1050	0.1075
+2022/11/25	2023/01/27	0.0975	0.1050
+2022/09/23	2022/11/25	0.0900	0.0975
+2022/07/22	2022/09/23	0.0825	0.0900
+2022/05/20	2022/07/22	0.0775	0.0825
+2022/03/25	2022/05/20	0.0750	0.0775
+2022/01/28	2022/03/25	0.0725	0.0750
+2021/11/19	2022/01/28	0.0700	0.0725
+2020/07/24	2021/11/19	0.0725	0.0700
+2020/05/22	2020/07/24	0.0775	0.0725
+2020/04/15	2020/05/22	0.0875	0.0775
+2020/03/20	2020/04/15	0.0975	0.0875
+2020/01/17	2020/03/20	0.1000	0.0975
+2019/07/17	2020/01/17	0.1025	0.1000
+2018/11/23	2019/07/17	0.1000	0.1025
+2018/03/29	2018/11/23	0.1025	0.1000
+2017/07/21	2018/03/29	0.1050	0.1025
+2016/03/18	2017/07/21	0.1025	0.1050
+2016/01/29	2016/03/18	0.0975	0.1025
+2015/11/20	2016/01/29	0.0950	0.0975
+2015/07/24	2015/11/20	0.0925	0.0950
+2014/07/18	2015/07/24	0.0900	0.0925
+2014/01/30	2014/07/18	0.0850	0.0900
+2012/07/20	2014/01/30	0.0900	0.0850
+2010/11/19	2012/07/20	0.0950	0.0900
+2010/09/10	2010/11/19	0.1000	0.0950
+2010/03/26	2010/09/10	0.1050	0.1000
+2009/08/14	2010/03/26	0.1100	0.1050
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/03/25	2009/05/04	0.1400	0.1300
+2009/02/06	2009/03/25	0.1500	0.1400
+2008/12/12	2009/02/06	0.1550	0.1500
+2008/06/13	2008/12/12	0.1500	0.1550
+2008/04/11	2008/06/13	0.1450	0.1500
+2007/12/07	2008/04/11	0.1400	0.1450
+2007/10/12	2007/12/07	0.1350	0.1400
+2007/08/17	2007/10/12	0.1300	0.1350
+2007/06/08	2007/08/17	0.1250	0.1300
+
+;
+
+PROC SORT data=work.rates;
+	BY start_date;
+RUN;
+
+DATA dim_amort;
+	FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+    RETAIN prev_payment_date;
+	DO period=0 TO &term.*&pp.;
+		payment_date=INTNX('month', &start_date., period/&pp.*12, 'same');
+
+		IF period > 0 THEN
+			days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+		ELSE
+			days_between_payment_dates=0;
+		prev_payment_date=payment_date;
+		previous_payment_date = LAG(payment_date);
+		payment_number=period;
+		remaining_payments=&term.*&pp. - period + 1;
+		OUTPUT;
+	END;
+	DROP prev_payment_date;
+RUN;
+
+DATA work.rate2;
+	SET work.rates;
+
+	/* Calculate start_date_sharia by finding the beginning of the month */
+	IF day(start_date)=1 THEN
+		DO;
+			start_date_sharia=start_date;
+		END;
+	ELSE
+		DO;
+			start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+		END;
+
+	IF DAY(end_date)=1 THEN
+		DO;
+			end_date_sharia=end_date;
+		END;
+	ELSE
+		DO;
+			end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+		END;
+
+	/* Apply the desired format to start_date_sharia and start_date */
+	FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+	/* Create sharia_flag variable to hold the value of the macro variable */
+	sharia_flag="&sharia";
+
+	/* Converts macro variable to uppercase */
+	/* Create start_date_2 variable based on the sharia_flag variable */
+	IF sharia_flag='y' THEN
+		DO;
+			ir_start_date=start_date_sharia;
+			ir_end_date=end_date_sharia;
+		END;
+	ELSE
+		DO;
+			ir_start_date=start_date;
+			ir_end_date=end_date;
+		END;
+	DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+RUN;
+
+PROC SQL;
+	CREATE TABLE work.new AS 
+	  SELECT *, 
+	         CASE WHEN r.ir_start_date >= a.previous_payment_date AND r.ir_end_date <= a.payment_date THEN 1
+	              WHEN r.ir_start_date <= a.payment_date AND r.ir_end_date >= a.payment_date THEN 1
+	              ELSE 0 END AS ir_flag,
+	              
+	         CASE WHEN days_between_payment_dates - (payment_date - ir_start_date) <=0 
+	              THEN days_between_payment_dates 
+	              ELSE days_between_payment_dates - (payment_date - ir_start_date) END AS daysinone,
+	              
+	         CASE WHEN days_between_payment_dates - (payment_date - ir_start_date) > 0 AND
+	                   r.ir_end_date > a.payment_date
+	              THEN days_between_payment_dates - (payment_date - ir_start_date) 
+	              WHEN days_between_payment_dates - (payment_date - ir_start_date) > 0 AND
+	                   r.ir_end_date < a.payment_date
+	              THEN r.ir_end_date - r.ir_start_date
+	              ELSE days_between_payment_dates END AS daysinone2,
+	              
+		     CASE WHEN payment_date - ir_start_date < days_between_payment_dates
+		          THEN payment_date - ir_start_date
+		          ELSE 0 END AS daysintwo,
+		          
+		     r.ir_end_date - r.ir_start_date AS ir_between
+	              
+		FROM work.dim_amort a 
+		LEFT JOIN work.rate2 r
+		ON r.ir_start_date < a.payment_date AND r.ir_end_date >= a.previous_payment_date;
+QUIT;
+PROC SORT DATA = work.new;
+BY payment_number;
+RUN;
+PROC PRINT DATA = work.new;
+FORMAT previous_payment_date yymmdd10.;
+VAR payment_number previous_payment_date payment_date  ir_start_date ir_end_date 
+    days_between_payment_dates daysinone daysinone2 daysintwo ir_between;
+WHERE payment_number > 0 AND ir_flag = 1;
+
+RUN;
+---------------
+Still figuring out days count
+0------------
+
+%let term = 3;
+%let pp = 1;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2020-12-14', yymmdd10.);
+%let sharia = n;
+
+DATA work.rates;
+	infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023/05/26	3000/06/01	0.1125	0.1175
+2023/03/31	2023/05/26	0.1075	0.1125
+2023/01/27	2023/03/31	0.1050	0.1075
+2022/11/25	2023/01/27	0.0975	0.1050
+2022/09/23	2022/11/25	0.0900	0.0975
+2022/07/22	2022/09/23	0.0825	0.0900
+2022/05/20	2022/07/22	0.0775	0.0825
+2022/03/25	2022/05/20	0.0750	0.0775
+2022/01/28	2022/03/25	0.0725	0.0750
+2021/11/19	2022/01/28	0.0700	0.0725
+2020/07/24	2021/11/19	0.0725	0.0700
+2020/05/22	2020/07/24	0.0775	0.0725
+2020/04/15	2020/05/22	0.0875	0.0775
+2020/03/20	2020/04/15	0.0975	0.0875
+2020/01/17	2020/03/20	0.1000	0.0975
+2019/07/17	2020/01/17	0.1025	0.1000
+2018/11/23	2019/07/17	0.1000	0.1025
+2018/03/29	2018/11/23	0.1025	0.1000
+2017/07/21	2018/03/29	0.1050	0.1025
+2016/03/18	2017/07/21	0.1025	0.1050
+2016/01/29	2016/03/18	0.0975	0.1025
+2015/11/20	2016/01/29	0.0950	0.0975
+2015/07/24	2015/11/20	0.0925	0.0950
+2014/07/18	2015/07/24	0.0900	0.0925
+2014/01/30	2014/07/18	0.0850	0.0900
+2012/07/20	2014/01/30	0.0900	0.0850
+2010/11/19	2012/07/20	0.0950	0.0900
+2010/09/10	2010/11/19	0.1000	0.0950
+2010/03/26	2010/09/10	0.1050	0.1000
+2009/08/14	2010/03/26	0.1100	0.1050
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/03/25	2009/05/04	0.1400	0.1300
+2009/02/06	2009/03/25	0.1500	0.1400
+2008/12/12	2009/02/06	0.1550	0.1500
+2008/06/13	2008/12/12	0.1500	0.1550
+2008/04/11	2008/06/13	0.1450	0.1500
+2007/12/07	2008/04/11	0.1400	0.1450
+2007/10/12	2007/12/07	0.1350	0.1400
+2007/08/17	2007/10/12	0.1300	0.1350
+2007/06/08	2007/08/17	0.1250	0.1300
+
+;
+
+PROC SORT data=work.rates;
+	BY start_date;
+RUN;
+
+DATA dim_amort;
+	FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+    RETAIN prev_payment_date;
+	DO period=0 TO &term.*&pp.;
+		payment_date=INTNX('month', &start_date., period/&pp.*12, 'same');
+
+		IF period > 0 THEN
+			days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+		ELSE
+			days_between_payment_dates=0;
+		prev_payment_date=payment_date;
+		previous_payment_date = LAG(payment_date);
+		payment_number=period;
+		remaining_payments=&term.*&pp. - period + 1;
+		OUTPUT;
+	END;
+	DROP prev_payment_date;
+RUN;
+
+DATA work.rate2;
+	SET work.rates;
+
+	/* Calculate start_date_sharia by finding the beginning of the month */
+	IF day(start_date)=1 THEN
+		DO;
+			start_date_sharia=start_date;
+		END;
+	ELSE
+		DO;
+			start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+		END;
+
+	IF DAY(end_date)=1 THEN
+		DO;
+			end_date_sharia=end_date;
+		END;
+	ELSE
+		DO;
+			end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+		END;
+
+	/* Apply the desired format to start_date_sharia and start_date */
+	FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+	/* Create sharia_flag variable to hold the value of the macro variable */
+	sharia_flag="&sharia";
+
+	/* Converts macro variable to uppercase */
+	/* Create start_date_2 variable based on the sharia_flag variable */
+	IF sharia_flag='y' THEN
+		DO;
+			ir_start_date=start_date_sharia;
+			ir_end_date=end_date_sharia;
+		END;
+	ELSE
+		DO;
+			ir_start_date=start_date;
+			ir_end_date=end_date;
+		END;
+	DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+RUN;
+
+PROC SQL;
+	CREATE TABLE work.new AS 
+	  SELECT *, 
+	         CASE WHEN r.ir_start_date >= a.previous_payment_date AND r.ir_end_date <= a.payment_date THEN 1
+	              WHEN r.ir_start_date <= a.payment_date AND r.ir_end_date >= a.payment_date THEN 1
+	              ELSE 0 END AS ir_flag,
+	              
+	         CASE WHEN days_between_payment_dates - (payment_date - ir_start_date) <=0 
+	              THEN days_between_payment_dates 
+	              ELSE days_between_payment_dates - (payment_date - ir_start_date) END AS daysinone,
+	              
+	         CASE WHEN days_between_payment_dates - (payment_date - ir_start_date) > 0 AND
+	                   r.ir_end_date > a.payment_date
+	              THEN days_between_payment_dates - (payment_date - ir_start_date)
+	              
+	              WHEN days_between_payment_dates - (payment_date - ir_start_date) > 0 AND
+	                   r.ir_end_date < a.payment_date
+	              THEN r.ir_end_date - r.ir_start_date
+	              
+	              ELSE days_between_payment_dates END AS daysinone2,
+	              
+	         CASE WHEN payment_date - ir_start_date < days_between_payment_dates AND
+	                   r.ir_end_date > a.payment_date
+		          THEN payment_date - ir_start_date
+		          
+		          WHEN days_between_payment_dates - (payment_date - ir_start_date) > 0 AND
+	                   r.ir_end_date < a.payment_date
+	              THEN 0
+	              
+		          ELSE 0 END AS daysintwo,
+		          
+		     r.ir_end_date - r.ir_start_date AS ir_between
+	              
+		FROM work.dim_amort a 
+		LEFT JOIN work.rate2 r
+		ON r.ir_start_date < a.payment_date AND r.ir_end_date >= a.previous_payment_date;
+QUIT;
+PROC SORT DATA = work.new;
+BY payment_number;
+RUN;
+PROC PRINT DATA = work.new;
+FORMAT previous_payment_date yymmdd10.;
+VAR payment_number previous_payment_date payment_date  ir_start_date ir_end_date 
+    days_between_payment_dates daysinone daysinone2 first_rate 
+    daysintwo second_rate ir_between;
+WHERE payment_number > 0 AND ir_flag = 1;
+
+RUN;
+
+---------------------
+Added an important date counter. This should in theory replace the days between payments in the daysinX calcultaion.
+---------------
+
+%let term = 3;
+%let pp = 1;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2020-12-14', yymmdd10.);
+%let sharia = n;
+
+DATA work.rates;
+	infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023/05/26	3000/06/01	0.1125	0.1175
+2023/03/31	2023/05/26	0.1075	0.1125
+2023/01/27	2023/03/31	0.1050	0.1075
+2022/11/25	2023/01/27	0.0975	0.1050
+2022/09/23	2022/11/25	0.0900	0.0975
+2022/07/22	2022/09/23	0.0825	0.0900
+2022/05/20	2022/07/22	0.0775	0.0825
+2022/03/25	2022/05/20	0.0750	0.0775
+2022/01/28	2022/03/25	0.0725	0.0750
+2021/11/19	2022/01/28	0.0700	0.0725
+2020/07/24	2021/11/19	0.0725	0.0700
+2020/05/22	2020/07/24	0.0775	0.0725
+2020/04/15	2020/05/22	0.0875	0.0775
+2020/03/20	2020/04/15	0.0975	0.0875
+2020/01/17	2020/03/20	0.1000	0.0975
+2019/07/17	2020/01/17	0.1025	0.1000
+2018/11/23	2019/07/17	0.1000	0.1025
+2018/03/29	2018/11/23	0.1025	0.1000
+2017/07/21	2018/03/29	0.1050	0.1025
+2016/03/18	2017/07/21	0.1025	0.1050
+2016/01/29	2016/03/18	0.0975	0.1025
+2015/11/20	2016/01/29	0.0950	0.0975
+2015/07/24	2015/11/20	0.0925	0.0950
+2014/07/18	2015/07/24	0.0900	0.0925
+2014/01/30	2014/07/18	0.0850	0.0900
+2012/07/20	2014/01/30	0.0900	0.0850
+2010/11/19	2012/07/20	0.0950	0.0900
+2010/09/10	2010/11/19	0.1000	0.0950
+2010/03/26	2010/09/10	0.1050	0.1000
+2009/08/14	2010/03/26	0.1100	0.1050
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/03/25	2009/05/04	0.1400	0.1300
+2009/02/06	2009/03/25	0.1500	0.1400
+2008/12/12	2009/02/06	0.1550	0.1500
+2008/06/13	2008/12/12	0.1500	0.1550
+2008/04/11	2008/06/13	0.1450	0.1500
+2007/12/07	2008/04/11	0.1400	0.1450
+2007/10/12	2007/12/07	0.1350	0.1400
+2007/08/17	2007/10/12	0.1300	0.1350
+2007/06/08	2007/08/17	0.1250	0.1300
+
+;
+
+PROC SORT data=work.rates;
+	BY start_date;
+RUN;
+
+DATA dim_amort;
+	FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+    RETAIN prev_payment_date;
+	DO period=0 TO &term.*&pp.;
+		payment_date=INTNX('month', &start_date., period/&pp.*12, 'same');
+
+		IF period > 0 THEN
+			days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+		ELSE
+			days_between_payment_dates=0;
+		prev_payment_date=payment_date;
+		previous_payment_date = LAG(payment_date);
+		payment_number=period;
+		remaining_payments=&term.*&pp. - period + 1;
+		OUTPUT;
+	END;
+	DROP prev_payment_date;
+RUN;
+
+DATA work.rate2;
+	SET work.rates;
+
+	/* Calculate start_date_sharia by finding the beginning of the month */
+	IF day(start_date)=1 THEN
+		DO;
+			start_date_sharia=start_date;
+		END;
+	ELSE
+		DO;
+			start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+		END;
+
+	IF DAY(end_date)=1 THEN
+		DO;
+			end_date_sharia=end_date;
+		END;
+	ELSE
+		DO;
+			end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+		END;
+
+	/* Apply the desired format to start_date_sharia and start_date */
+	FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+	/* Create sharia_flag variable to hold the value of the macro variable */
+	sharia_flag="&sharia";
+
+	/* Converts macro variable to uppercase */
+	/* Create start_date_2 variable based on the sharia_flag variable */
+	IF sharia_flag='y' THEN
+		DO;
+			ir_start_date=start_date_sharia;
+			ir_end_date=end_date_sharia;
+		END;
+	ELSE
+		DO;
+			ir_start_date=start_date;
+			ir_end_date=end_date;
+		END;
+	ir_between = ir_end_date - ir_start_date;
+	DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+RUN;
+
+PROC SQL;
+	CREATE TABLE work.new AS 
+	SELECT *,
+	       CASE WHEN important_day_counter - (payment_date - ir_start_date) <=0 
+	            THEN important_day_counter 
+	            ELSE important_day_counter - (payment_date - ir_start_date) END AS daysinone,
+	              
+	       CASE WHEN payment_date - ir_start_date < important_day_counter AND
+	                   ir_end_date > payment_date
+		        THEN payment_date - ir_start_date
+		          
+		        WHEN important_day_counter - (payment_date - ir_start_date) > 0 AND
+	                 ir_end_date < payment_date
+	            THEN 0
+	              
+		        ELSE 0 END AS daysintwo
+	 FROM  (SELECT *, 
+	         CASE WHEN r.ir_start_date >= a.previous_payment_date AND r.ir_end_date <= a.payment_date THEN 1
+	              WHEN r.ir_start_date <= a.payment_date AND r.ir_end_date >= a.payment_date THEN 1
+	              ELSE 0 END AS ir_flag,
+	              
+	         CASE WHEN r.ir_between < a.days_between_payment_dates THEN r.ir_between
+	              ELSE a.days_between_payment_dates END AS important_day_counter
+	              
+		FROM work.dim_amort a 
+		LEFT JOIN work.rate2 r
+		ON r.ir_start_date < a.payment_date AND r.ir_end_date >= a.previous_payment_date) DQ;
+QUIT;
+PROC SORT DATA = work.new;
+BY payment_number;
+RUN;
+PROC PRINT DATA = work.new;
+FORMAT previous_payment_date yymmdd10.;
+VAR payment_number previous_payment_date payment_date  ir_start_date ir_end_date 
+    days_between_payment_dates ir_between important_day_counter daysinone first_rate 
+    daysintwo second_rate;
+WHERE payment_number > 0 AND ir_flag = 1;
+
+RUN;
+---------------------------------------
+Need to fix the days in two counter now
+---------------------------------------
+%let term = 3;
+%let pp = 12;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2020-12-14', yymmdd10.);
+%let sharia = n;
+
+DATA work.rates;
+	infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023/05/26	3000/06/01	0.1125	0.1175
+2023/03/31	2023/05/26	0.1075	0.1125
+2023/01/27	2023/03/31	0.1050	0.1075
+2022/11/25	2023/01/27	0.0975	0.1050
+2022/09/23	2022/11/25	0.0900	0.0975
+2022/07/22	2022/09/23	0.0825	0.0900
+2022/05/20	2022/07/22	0.0775	0.0825
+2022/03/25	2022/05/20	0.0750	0.0775
+2022/01/28	2022/03/25	0.0725	0.0750
+2021/11/19	2022/01/28	0.0700	0.0725
+2020/07/24	2021/11/19	0.0725	0.0700
+2020/05/22	2020/07/24	0.0775	0.0725
+2020/04/15	2020/05/22	0.0875	0.0775
+2020/03/20	2020/04/15	0.0975	0.0875
+2020/01/17	2020/03/20	0.1000	0.0975
+2019/07/17	2020/01/17	0.1025	0.1000
+2018/11/23	2019/07/17	0.1000	0.1025
+2018/03/29	2018/11/23	0.1025	0.1000
+2017/07/21	2018/03/29	0.1050	0.1025
+2016/03/18	2017/07/21	0.1025	0.1050
+2016/01/29	2016/03/18	0.0975	0.1025
+2015/11/20	2016/01/29	0.0950	0.0975
+2015/07/24	2015/11/20	0.0925	0.0950
+2014/07/18	2015/07/24	0.0900	0.0925
+2014/01/30	2014/07/18	0.0850	0.0900
+2012/07/20	2014/01/30	0.0900	0.0850
+2010/11/19	2012/07/20	0.0950	0.0900
+2010/09/10	2010/11/19	0.1000	0.0950
+2010/03/26	2010/09/10	0.1050	0.1000
+2009/08/14	2010/03/26	0.1100	0.1050
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/03/25	2009/05/04	0.1400	0.1300
+2009/02/06	2009/03/25	0.1500	0.1400
+2008/12/12	2009/02/06	0.1550	0.1500
+2008/06/13	2008/12/12	0.1500	0.1550
+2008/04/11	2008/06/13	0.1450	0.1500
+2007/12/07	2008/04/11	0.1400	0.1450
+2007/10/12	2007/12/07	0.1350	0.1400
+2007/08/17	2007/10/12	0.1300	0.1350
+2007/06/08	2007/08/17	0.1250	0.1300
+
+;
+
+PROC SORT data=work.rates;
+	BY start_date;
+RUN;
+
+DATA dim_amort;
+	FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+    RETAIN prev_payment_date;
+	DO period=0 TO &term.*&pp.;
+		payment_date=INTNX('month', &start_date., period/&pp.*12, 'same');
+
+		IF period > 0 THEN
+			days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+		ELSE
+			days_between_payment_dates=0;
+		prev_payment_date=payment_date;
+		previous_payment_date = LAG(payment_date);
+		payment_number=period;
+		remaining_payments=&term.*&pp. - period + 1;
+		OUTPUT;
+	END;
+	DROP prev_payment_date;
+RUN;
+
+DATA work.rate2;
+	SET work.rates;
+
+	/* Calculate start_date_sharia by finding the beginning of the month */
+	IF day(start_date)=1 THEN
+		DO;
+			start_date_sharia=start_date;
+		END;
+	ELSE
+		DO;
+			start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+		END;
+
+	IF DAY(end_date)=1 THEN
+		DO;
+			end_date_sharia=end_date;
+		END;
+	ELSE
+		DO;
+			end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+		END;
+
+	/* Apply the desired format to start_date_sharia and start_date */
+	FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+	/* Create sharia_flag variable to hold the value of the macro variable */
+	sharia_flag="&sharia";
+
+	/* Converts macro variable to uppercase */
+	/* Create start_date_2 variable based on the sharia_flag variable */
+	IF sharia_flag='y' THEN
+		DO;
+			ir_start_date=start_date_sharia;
+			ir_end_date=end_date_sharia;
+		END;
+	ELSE
+		DO;
+			ir_start_date=start_date;
+			ir_end_date=end_date;
+		END;
+	ir_between = ir_end_date - ir_start_date;
+	DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+RUN;
+
+PROC SQL;
+	CREATE TABLE work.new AS 
+	SELECT *,
+	       CASE WHEN 0 < ir_start_date - previous_payment_date < important_day_counter
+	            THEN ir_start_date - previous_payment_date
+	            ELSE important_day_counter END AS daysinone,
+	              
+	       CASE WHEN payment_date - ir_start_date < important_day_counter AND
+	                   ir_end_date > payment_date
+		        THEN payment_date - ir_start_date
+		          
+		    WHEN important_day_counter - (payment_date - ir_start_date) > 0 AND
+	                   ir_end_date < payment_date
+	            THEN 0
+	              
+		        ELSE 0 END AS daysintwo
+	 FROM  (SELECT *, 
+	         CASE WHEN r.ir_start_date >= a.previous_payment_date AND r.ir_end_date <= a.payment_date THEN 1
+	              WHEN r.ir_start_date <= a.payment_date AND r.ir_end_date >= a.payment_date THEN 1
+	              ELSE 0 END AS ir_flag,
+	              
+	         CASE WHEN r.ir_between < a.days_between_payment_dates THEN r.ir_between
+	              ELSE a.days_between_payment_dates END AS important_day_counter
+	              
+		FROM work.dim_amort a 
+		LEFT JOIN work.rate2 r
+		ON r.ir_start_date < a.payment_date AND r.ir_end_date >= a.previous_payment_date) DQ;
+QUIT;
+PROC SORT DATA = work.new;
+BY payment_number;
+RUN;
+PROC PRINT DATA = work.new;
+FORMAT previous_payment_date yymmdd10.;
+VAR payment_number previous_payment_date payment_date  ir_start_date ir_end_date 
+    days_between_payment_dates ir_between important_day_counter daysinone first_rate 
+    daysintwo second_rate;
+WHERE payment_number > 0 AND ir_flag = 1;
+
+RUN;
+------------------------------------
+We are going to have to design a new variable where we flag if a row is the last or first payment
+------------------------------------
+%let term = 3;
+%let pp = 1;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2020-12-14', yymmdd10.);
+%let sharia = n;
+
+
+DATA work.rates;
+	infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023/05/26	3000/06/01	0.1125	0.1175
+2023/03/31	2023/05/26	0.1075	0.1125
+2023/01/27	2023/03/31	0.1050	0.1075
+2022/11/25	2023/01/27	0.0975	0.1050
+2022/09/23	2022/11/25	0.0900	0.0975
+2022/07/22	2022/09/23	0.0825	0.0900
+2022/05/20	2022/07/22	0.0775	0.0825
+2022/03/25	2022/05/20	0.0750	0.0775
+2022/01/28	2022/03/25	0.0725	0.0750
+2021/11/19	2022/01/28	0.0700	0.0725
+2020/07/24	2021/11/19	0.0725	0.0700
+2020/05/22	2020/07/24	0.0775	0.0725
+2020/04/15	2020/05/22	0.0875	0.0775
+2020/03/20	2020/04/15	0.0975	0.0875
+2020/01/17	2020/03/20	0.1000	0.0975
+2019/07/17	2020/01/17	0.1025	0.1000
+2018/11/23	2019/07/17	0.1000	0.1025
+2018/03/29	2018/11/23	0.1025	0.1000
+2017/07/21	2018/03/29	0.1050	0.1025
+2016/03/18	2017/07/21	0.1025	0.1050
+2016/01/29	2016/03/18	0.0975	0.1025
+2015/11/20	2016/01/29	0.0950	0.0975
+2015/07/24	2015/11/20	0.0925	0.0950
+2014/07/18	2015/07/24	0.0900	0.0925
+2014/01/30	2014/07/18	0.0850	0.0900
+2012/07/20	2014/01/30	0.0900	0.0850
+2010/11/19	2012/07/20	0.0950	0.0900
+2010/09/10	2010/11/19	0.1000	0.0950
+2010/03/26	2010/09/10	0.1050	0.1000
+2009/08/14	2010/03/26	0.1100	0.1050
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/03/25	2009/05/04	0.1400	0.1300
+2009/02/06	2009/03/25	0.1500	0.1400
+2008/12/12	2009/02/06	0.1550	0.1500
+2008/06/13	2008/12/12	0.1500	0.1550
+2008/04/11	2008/06/13	0.1450	0.1500
+2007/12/07	2008/04/11	0.1400	0.1450
+2007/10/12	2007/12/07	0.1350	0.1400
+2007/08/17	2007/10/12	0.1300	0.1350
+2007/06/08	2007/08/17	0.1250	0.1300
+
+;
+
+PROC SORT data=work.rates;
+	BY start_date;
+RUN;
+
+DATA dim_amort;
+	FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+    RETAIN prev_payment_date;
+	DO period=0 TO &term.*&pp.;
+		payment_date=INTNX('month', &start_date., period/&pp.*12, 'same');
+
+		IF period > 0 THEN
+			days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+		ELSE
+			days_between_payment_dates=0;
+		prev_payment_date=payment_date;
+		previous_payment_date = LAG(payment_date);
+		payment_number=period;
+		remaining_payments=&term.*&pp. - period + 1;
+		OUTPUT;
+	END;
+	DROP prev_payment_date;
+RUN;
+
+DATA work.rate2;
+	SET work.rates;
+
+	/* Calculate start_date_sharia by finding the beginning of the month */
+	IF day(start_date)=1 THEN
+		DO;
+			start_date_sharia=start_date;
+		END;
+	ELSE
+		DO;
+			start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+		END;
+
+	IF DAY(end_date)=1 THEN
+		DO;
+			end_date_sharia=end_date;
+		END;
+	ELSE
+		DO;
+			end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+		END;
+
+	/* Apply the desired format to start_date_sharia and start_date */
+	FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+	/* Create sharia_flag variable to hold the value of the macro variable */
+	sharia_flag="&sharia";
+
+	/* Converts macro variable to uppercase */
+	/* Create start_date_2 variable based on the sharia_flag variable */
+	IF sharia_flag='y' THEN
+		DO;
+			ir_start_date=start_date_sharia;
+			ir_end_date=end_date_sharia;
+		END;
+	ELSE
+		DO;
+			ir_start_date=start_date;
+			ir_end_date=end_date;
+		END;
+	ir_between = ir_end_date - ir_start_date;
+	DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+RUN;
+
+PROC SQL noprint;
+CREATE TABLE work.new AS
+SELECT *
+FROM (SELECT *, 
+	         CASE WHEN r.ir_start_date >= a.previous_payment_date AND r.ir_end_date <= a.payment_date THEN 1
+	              WHEN r.ir_start_date <= a.payment_date AND r.ir_end_date >= a.payment_date THEN 1
+	              ELSE 0 END AS ir_flag,
+	              
+	         CASE WHEN r.ir_between < a.days_between_payment_dates THEN r.ir_between
+	              ELSE a.days_between_payment_dates END AS important_day_counter
+	              
+		FROM work.dim_amort a 
+		LEFT JOIN work.rate2 r
+		ON r.ir_start_date < a.payment_date AND r.ir_end_date >= a.previous_payment_date)
+		WHERE ir_flag = 1
+		;
+QUIT;
+
+PROC SORT DATA = work.new;
+BY payment_number;
+RUN;
+
+DATA work.new;
+   SET work.new;
+   IF first.payment_number THEN rnum=0;
+   ELSE IF last.payment_number THEN rnum=9999;
+RUN;
+
+
+PROC SORT DATA = work.new;
+BY payment_number ir_start_date;
+RUN;
+PROC PRINT DATA = work.new2;
+FORMAT previous_payment_date yymmdd10.;
+VAR payment_number previous_payment_date payment_date  ir_start_date ir_end_date 
+    days_between_payment_dates ir_between important_day_counter  first_rate 
+     second_rate ir_flag rnum;
+WHERE payment_number > 0;
+RUN;
+--------------------------------
+We know have max min rate change flag working
+But we still need to figure out how to get the daysinX counter to work.
+--------------------------------
+%let term = 3;
+%let pp = 1;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2020-12-14', yymmdd10.);
+%let sharia = n;
+
+
+DATA work.rates;
+	infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023/05/26	3000/06/01	0.1125	0.1175
+2023/03/31	2023/05/26	0.1075	0.1125
+2023/01/27	2023/03/31	0.1050	0.1075
+2022/11/25	2023/01/27	0.0975	0.1050
+2022/09/23	2022/11/25	0.0900	0.0975
+2022/07/22	2022/09/23	0.0825	0.0900
+2022/05/20	2022/07/22	0.0775	0.0825
+2022/03/25	2022/05/20	0.0750	0.0775
+2022/01/28	2022/03/25	0.0725	0.0750
+2021/11/19	2022/01/28	0.0700	0.0725
+2020/07/24	2021/11/19	0.0725	0.0700
+2020/05/22	2020/07/24	0.0775	0.0725
+2020/04/15	2020/05/22	0.0875	0.0775
+2020/03/20	2020/04/15	0.0975	0.0875
+2020/01/17	2020/03/20	0.1000	0.0975
+2019/07/17	2020/01/17	0.1025	0.1000
+2018/11/23	2019/07/17	0.1000	0.1025
+2018/03/29	2018/11/23	0.1025	0.1000
+2017/07/21	2018/03/29	0.1050	0.1025
+2016/03/18	2017/07/21	0.1025	0.1050
+2016/01/29	2016/03/18	0.0975	0.1025
+2015/11/20	2016/01/29	0.0950	0.0975
+2015/07/24	2015/11/20	0.0925	0.0950
+2014/07/18	2015/07/24	0.0900	0.0925
+2014/01/30	2014/07/18	0.0850	0.0900
+2012/07/20	2014/01/30	0.0900	0.0850
+2010/11/19	2012/07/20	0.0950	0.0900
+2010/09/10	2010/11/19	0.1000	0.0950
+2010/03/26	2010/09/10	0.1050	0.1000
+2009/08/14	2010/03/26	0.1100	0.1050
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/03/25	2009/05/04	0.1400	0.1300
+2009/02/06	2009/03/25	0.1500	0.1400
+2008/12/12	2009/02/06	0.1550	0.1500
+2008/06/13	2008/12/12	0.1500	0.1550
+2008/04/11	2008/06/13	0.1450	0.1500
+2007/12/07	2008/04/11	0.1400	0.1450
+2007/10/12	2007/12/07	0.1350	0.1400
+2007/08/17	2007/10/12	0.1300	0.1350
+2007/06/08	2007/08/17	0.1250	0.1300
+
+;
+
+PROC SORT data=work.rates;
+	BY start_date;
+RUN;
+
+DATA dim_amort;
+	FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+    RETAIN prev_payment_date;
+	DO period=0 TO &term.*&pp.;
+		payment_date=INTNX('month', &start_date., period/&pp.*12, 'same');
+
+		IF period > 0 THEN
+			days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+		ELSE
+			days_between_payment_dates=0;
+		prev_payment_date=payment_date;
+		previous_payment_date = LAG(payment_date);
+		payment_number=period;
+		remaining_payments=&term.*&pp. - period + 1;
+		OUTPUT;
+	END;
+	DROP prev_payment_date;
+RUN;
+
+DATA work.rate2;
+	SET work.rates;
+
+	/* Calculate start_date_sharia by finding the beginning of the month */
+	IF day(start_date)=1 THEN
+		DO;
+			start_date_sharia=start_date;
+		END;
+	ELSE
+		DO;
+			start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+		END;
+
+	IF DAY(end_date)=1 THEN
+		DO;
+			end_date_sharia=end_date;
+		END;
+	ELSE
+		DO;
+			end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+		END;
+
+	/* Apply the desired format to start_date_sharia and start_date */
+	FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+	/* Create sharia_flag variable to hold the value of the macro variable */
+	sharia_flag="&sharia";
+
+	/* Converts macro variable to uppercase */
+	/* Create start_date_2 variable based on the sharia_flag variable */
+	IF sharia_flag='y' THEN
+		DO;
+			ir_start_date=start_date_sharia;
+			ir_end_date=end_date_sharia;
+		END;
+	ELSE
+		DO;
+			ir_start_date=start_date;
+			ir_end_date=end_date;
+		END;
+	ir_between = ir_end_date - ir_start_date;
+	DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+RUN;
+
+PROC SQL noprint;
+CREATE TABLE work.new AS
+SELECT *
+FROM (SELECT *, 
+	         CASE WHEN r.ir_start_date >= a.previous_payment_date AND r.ir_end_date <= a.payment_date THEN 1
+	              WHEN r.ir_start_date <= a.payment_date AND r.ir_end_date >= a.payment_date THEN 1
+	              ELSE 0 END AS ir_flag,
+	              
+	         CASE WHEN r.ir_between < a.days_between_payment_dates THEN r.ir_between
+	              ELSE a.days_between_payment_dates END AS important_day_counter
+	              
+		FROM work.dim_amort a 
+		LEFT JOIN work.rate2 r
+		ON r.ir_start_date < a.payment_date AND r.ir_end_date >= a.previous_payment_date)
+		WHERE ir_flag = 1
+		;
+QUIT;
+
+PROC SORT DATA = work.new;
+BY payment_number;
+RUN;
+
+DATA work.new;
+   SET work.new;
+   BY payment_number ir_start_date;
+   IF first.payment_number THEN rank_ac=1;
+   ELSE IF last.payment_number THEN rank_ac=2;
+   ELSE rank_ac =0;
+RUN;
+
+PROC SQL;
+	CREATE TABLE work.new2 AS 
+	SELECT *,
+	       CASE WHEN 0 < ir_start_date - previous_payment_date < important_day_counter
+	            THEN ir_start_date - previous_payment_date
+	            WHEN 0  < important_day_counter < ir_start_date - previous_payment_date AND rank_ac = 1
+	            THEN ir_start_date - previous_payment_date
+	            ELSE important_day_counter END AS daysinone,
+	              
+	       CASE WHEN payment_date - ir_start_date < important_day_counter AND
+	                   ir_end_date > payment_date
+		        THEN payment_date - ir_start_date
+		          
+		    WHEN important_day_counter - (payment_date - ir_start_date) > 0 AND
+	                   ir_end_date < payment_date
+	            THEN 0
+	              
+		        ELSE 0 END AS daysintwo
+     FROM work.new
+     ;
+QUIT;
+
+PROC PRINT DATA = work.new2;
+FORMAT previous_payment_date yymmdd10.;
+VAR payment_number previous_payment_date payment_date  ir_start_date ir_end_date 
+    days_between_payment_dates ir_between important_day_counter  first_rate 
+     second_rate ir_flag rank_ac daysinone daysintwo;
+WHERE payment_number > 0;
+RUN;
+--------------------------------------------------------------------------------
+LAgged ir_start_date
+-===================================================================================
+
+%let term = 3;
+%let pp = 1;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2020-12-14', yymmdd10.);
+%let sharia = n;
+
+
+DATA work.rates;
+	infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023/05/26	3000/06/01	0.1125	0.1175
+2023/03/31	2023/05/26	0.1075	0.1125
+2023/01/27	2023/03/31	0.1050	0.1075
+2022/11/25	2023/01/27	0.0975	0.1050
+2022/09/23	2022/11/25	0.0900	0.0975
+2022/07/22	2022/09/23	0.0825	0.0900
+2022/05/20	2022/07/22	0.0775	0.0825
+2022/03/25	2022/05/20	0.0750	0.0775
+2022/01/28	2022/03/25	0.0725	0.0750
+2021/11/19	2022/01/28	0.0700	0.0725
+2020/07/24	2021/11/19	0.0725	0.0700
+2020/05/22	2020/07/24	0.0775	0.0725
+2020/04/15	2020/05/22	0.0875	0.0775
+2020/03/20	2020/04/15	0.0975	0.0875
+2020/01/17	2020/03/20	0.1000	0.0975
+2019/07/17	2020/01/17	0.1025	0.1000
+2018/11/23	2019/07/17	0.1000	0.1025
+2018/03/29	2018/11/23	0.1025	0.1000
+2017/07/21	2018/03/29	0.1050	0.1025
+2016/03/18	2017/07/21	0.1025	0.1050
+2016/01/29	2016/03/18	0.0975	0.1025
+2015/11/20	2016/01/29	0.0950	0.0975
+2015/07/24	2015/11/20	0.0925	0.0950
+2014/07/18	2015/07/24	0.0900	0.0925
+2014/01/30	2014/07/18	0.0850	0.0900
+2012/07/20	2014/01/30	0.0900	0.0850
+2010/11/19	2012/07/20	0.0950	0.0900
+2010/09/10	2010/11/19	0.1000	0.0950
+2010/03/26	2010/09/10	0.1050	0.1000
+2009/08/14	2010/03/26	0.1100	0.1050
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/03/25	2009/05/04	0.1400	0.1300
+2009/02/06	2009/03/25	0.1500	0.1400
+2008/12/12	2009/02/06	0.1550	0.1500
+2008/06/13	2008/12/12	0.1500	0.1550
+2008/04/11	2008/06/13	0.1450	0.1500
+2007/12/07	2008/04/11	0.1400	0.1450
+2007/10/12	2007/12/07	0.1350	0.1400
+2007/08/17	2007/10/12	0.1300	0.1350
+2007/06/08	2007/08/17	0.1250	0.1300
+
+;
+
+PROC SORT data=work.rates;
+	BY start_date;
+RUN;
+
+DATA dim_amort;
+	FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+    RETAIN prev_payment_date;
+	DO period=0 TO &term.*&pp.;
+		payment_date=INTNX('month', &start_date., period/&pp.*12, 'same');
+
+		IF period > 0 THEN
+			days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+		ELSE
+			days_between_payment_dates=0;
+		prev_payment_date=payment_date;
+		previous_payment_date = LAG(payment_date);
+		payment_number=period;
+		remaining_payments=&term.*&pp. - period + 1;
+		OUTPUT;
+	END;
+	DROP prev_payment_date;
+RUN;
+
+DATA work.rate2;
+	SET work.rates;
+
+	/* Calculate start_date_sharia by finding the beginning of the month */
+	IF day(start_date)=1 THEN
+		DO;
+			start_date_sharia=start_date;
+		END;
+	ELSE
+		DO;
+			start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+		END;
+
+	IF DAY(end_date)=1 THEN
+		DO;
+			end_date_sharia=end_date;
+		END;
+	ELSE
+		DO;
+			end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+		END;
+
+	/* Apply the desired format to start_date_sharia and start_date */
+	FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+	/* Create sharia_flag variable to hold the value of the macro variable */
+	sharia_flag="&sharia";
+
+	/* Converts macro variable to uppercase */
+	/* Create start_date_2 variable based on the sharia_flag variable */
+	IF sharia_flag='y' THEN
+		DO;
+			ir_start_date=start_date_sharia;
+			ir_end_date=end_date_sharia;
+		END;
+	ELSE
+		DO;
+			ir_start_date=start_date;
+			ir_end_date=end_date;
+		END;
+	ir_between = ir_end_date - ir_start_date;
+	DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+RUN;
+
+PROC SQL noprint;
+CREATE TABLE work.new AS
+SELECT *
+FROM (SELECT *, 
+	         CASE WHEN r.ir_start_date >= a.previous_payment_date AND r.ir_end_date <= a.payment_date THEN 1
+	              WHEN r.ir_start_date <= a.payment_date AND r.ir_end_date >= a.payment_date THEN 1
+	              ELSE 0 END AS ir_flag,
+	              
+	         CASE WHEN r.ir_between < a.days_between_payment_dates THEN r.ir_between
+	              ELSE a.days_between_payment_dates END AS important_day_counter
+	              
+		FROM work.dim_amort a 
+		LEFT JOIN work.rate2 r
+		ON r.ir_start_date < a.payment_date AND r.ir_end_date >= a.previous_payment_date)
+		WHERE ir_flag = 1
+		;
+QUIT;
+
+PROC SORT DATA = work.new;
+BY payment_number;
+RUN;
+
+DATA work.new;
+   SET work.new;
+   BY payment_number ir_start_date;
+   IF first.payment_number THEN rank_ac=1;
+   ELSE IF last.payment_number THEN rank_ac=2;
+   ELSE rank_ac =0;
+   lir_start_date = LAG(ir_start_date);
+RUN;
+
+PROC SQL;
+	CREATE TABLE work.new2 AS 
+	SELECT *,
+	       CASE WHEN 0 < ir_start_date - previous_payment_date < important_day_counter
+	            THEN ir_start_date - previous_payment_date
+	            WHEN 0  < important_day_counter < ir_start_date - previous_payment_date AND rank_ac = 1
+	            THEN ir_start_date - previous_payment_date
+	            ELSE important_day_counter END AS daysinone,
+	              
+	       CASE WHEN payment_date - ir_start_date < important_day_counter AND
+	                   ir_end_date > payment_date
+		        THEN payment_date - ir_start_date
+		          
+		    WHEN important_day_counter - (payment_date - ir_start_date) > 0 AND
+	                   ir_end_date < payment_date
+	            THEN 0
+	              
+		        ELSE 0 END AS daysintwo
+     FROM work.new
+     ;
+QUIT;
+
+PROC PRINT DATA = work.new2;
+FORMAT previous_payment_date lir_start_date yymmdd10.;
+VAR payment_number previous_payment_date payment_date lir_start_date ir_start_date ir_end_date 
+    days_between_payment_dates ir_between important_day_counter  first_rate 
+     second_rate rank_ac daysinone daysintwo;
+WHERE payment_number > 0;
+RUN;
+
+--========================
+========================
+%let term = 3;
+%let pp = 1;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2020-12-14', yymmdd10.);
+%let sharia = n;
+
+
+DATA work.rates;
+	infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023/05/26	3000/06/01	0.1125	0.1175
+2023/03/31	2023/05/26	0.1075	0.1125
+2023/01/27	2023/03/31	0.1050	0.1075
+2022/11/25	2023/01/31	0.0975	0.1050
+2022/09/23	2022/11/25	0.0900	0.0975
+2022/07/22	2022/09/23	0.0825	0.0900
+2022/05/20	2022/07/22	0.0775	0.0825
+2022/03/25	2022/05/20	0.0750	0.0775
+2022/01/28	2022/03/25	0.0725	0.0750
+2021/11/19	2022/01/28	0.0700	0.0725
+2020/07/24	2021/11/19	0.0725	0.0700
+2020/05/22	2020/07/24	0.0775	0.0725
+2020/04/15	2020/05/22	0.0875	0.0775
+2020/03/20	2020/04/15	0.0975	0.0875
+2020/01/17	2020/03/20	0.1000	0.0975
+2019/07/17	2020/01/17	0.1025	0.1000
+2018/11/23	2019/07/17	0.1000	0.1025
+2018/03/29	2018/11/23	0.1025	0.1000
+2017/07/21	2018/03/29	0.1050	0.1025
+2016/03/18	2017/07/21	0.1025	0.1050
+2016/01/29	2016/03/18	0.0975	0.1025
+2015/11/20	2016/01/29	0.0950	0.0975
+2015/07/24	2015/11/20	0.0925	0.0950
+2014/07/18	2015/07/24	0.0900	0.0925
+2014/01/30	2014/07/18	0.0850	0.0900
+2012/07/20	2014/01/30	0.0900	0.0850
+2010/11/19	2012/07/20	0.0950	0.0900
+2010/09/10	2010/11/19	0.1000	0.0950
+2010/03/26	2010/09/10	0.1050	0.1000
+2009/08/14	2010/03/26	0.1100	0.1050
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/03/25	2009/05/04	0.1400	0.1300
+2009/02/06	2009/03/25	0.1500	0.1400
+2008/12/12	2009/02/06	0.1550	0.1500
+2008/06/13	2008/12/12	0.1500	0.1550
+2008/04/11	2008/06/13	0.1450	0.1500
+2007/12/07	2008/04/11	0.1400	0.1450
+2007/10/12	2007/12/07	0.1350	0.1400
+2007/08/17	2007/10/12	0.1300	0.1350
+2007/06/08	2007/08/17	0.1250	0.1300
+
+;
+
+PROC SORT data=work.rates;
+	BY start_date;
+RUN;
+
+DATA dim_amort;
+	FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+    RETAIN prev_payment_date;
+	DO period=0 TO &term.*&pp.;
+		payment_date=INTNX('month', &start_date., period/&pp.*12, 'same');
+
+		IF period > 0 THEN
+			days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+		ELSE
+			days_between_payment_dates=0;
+		prev_payment_date=payment_date;
+		previous_payment_date = LAG(payment_date);
+		payment_number=period;
+		remaining_payments=&term.*&pp. - period + 1;
+		OUTPUT;
+	END;
+	DROP prev_payment_date;
+RUN;
+
+DATA work.rate2;
+	SET work.rates;
+
+	/* Calculate start_date_sharia by finding the beginning of the month */
+	IF day(start_date)=1 THEN
+		DO;
+			start_date_sharia=start_date;
+		END;
+	ELSE
+		DO;
+			start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+		END;
+
+	IF DAY(end_date)=1 THEN
+		DO;
+			end_date_sharia=end_date;
+		END;
+	ELSE
+		DO;
+			end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+		END;
+
+	/* Apply the desired format to start_date_sharia and start_date */
+	FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+	/* Create sharia_flag variable to hold the value of the macro variable */
+	sharia_flag="&sharia";
+
+	/* Converts macro variable to uppercase */
+	/* Create start_date_2 variable based on the sharia_flag variable */
+	IF sharia_flag='y' THEN
+		DO;
+			ir_start_date=start_date_sharia;
+			ir_end_date=end_date_sharia;
+		END;
+	ELSE
+		DO;
+			ir_start_date=start_date;
+			ir_end_date=end_date;
+		END;
+	ir_between = ir_end_date - ir_start_date;
+	DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+RUN;
+
+PROC SQL noprint;
+CREATE TABLE work.new AS
+SELECT *
+FROM (SELECT *, 
+	         CASE WHEN r.ir_start_date >= a.previous_payment_date AND r.ir_end_date <= a.payment_date THEN 1
+	              WHEN r.ir_start_date <= a.payment_date AND r.ir_end_date >= a.payment_date THEN 1
+	              ELSE 0 END AS ir_flag,
+	              
+	         CASE WHEN r.ir_between < a.days_between_payment_dates THEN r.ir_between
+	              ELSE a.days_between_payment_dates END AS important_day_counter
+	              
+		FROM work.dim_amort a 
+		LEFT JOIN work.rate2 r
+		ON r.ir_start_date < a.payment_date AND r.ir_end_date >= a.previous_payment_date)
+		WHERE ir_flag = 1
+		;
+QUIT;
+
+PROC SORT DATA = work.new;
+BY payment_number;
+RUN;
+
+DATA work.new;
+   SET work.new;
+   BY payment_number ir_start_date;
+   IF first.payment_number THEN rank_ac=1;
+   ELSE IF last.payment_number THEN rank_ac=2;
+   ELSE rank_ac =0;
+   lir_start_date = LAG(ir_start_date);
+RUN;
+
+PROC SQL;
+	CREATE TABLE work.new2 AS 
+	SELECT *,
+	       CASE WHEN 0 < ir_start_date - previous_payment_date < important_day_counter
+	            THEN ir_start_date - previous_payment_date
+	            WHEN 0  < important_day_counter < ir_start_date - previous_payment_date AND rank_ac = 1
+	            THEN ir_start_date - previous_payment_date
+	            WHEN 0  < important_day_counter < ir_start_date - previous_payment_date AND rank_ac = 2
+	            THEN ir_start_date - lir_start_date
+	            ELSE important_day_counter END AS daysinone,
+	              
+	       CASE WHEN payment_date - ir_start_date < important_day_counter AND
+	                   ir_end_date > payment_date
+		        THEN payment_date - ir_start_date
+		          
+		    WHEN important_day_counter - (payment_date - ir_start_date) > 0 AND
+	                   ir_end_date < payment_date
+	            THEN 0
+	              
+		        ELSE 0 END AS daysintwo
+     FROM work.new
+     ;
+QUIT;
+
+PROC PRINT DATA = work.new2;
+FORMAT previous_payment_date lir_start_date yymmdd10.;
+VAR payment_number previous_payment_date payment_date lir_start_date ir_start_date ir_end_date 
+    days_between_payment_dates ir_between important_day_counter  first_rate 
+     second_rate rank_ac daysinone daysintwo;
+WHERE payment_number > 0;
+RUN;
+-=------------------------------
+We have a breakage in days in one at rank_ac = 2, turns out daysintwo is the correct number???
+Also daystwo at rank_ac = 1. It should be equal to daysbetweenir.
+
+Should also actually map out how the interest rates are actually working....
+Really need to figure out and have a clear idea of how the interest rate regimes actually affect each payment in this long term scvenario.
+Double counting at certain rates for certain.
+---------------------------------
+%let term = 3;
+%let pp = 1;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2020-12-14', yymmdd10.);
+%let sharia = n;
+
+
+DATA work.rates;
+	infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023/05/26	3000/06/01	0.1125	0.1175
+2023/03/31	2023/05/26	0.1075	0.1125
+2023/01/27	2023/03/31	0.1050	0.1075
+2022/11/25	2023/01/27	0.0975	0.1050
+2022/09/23	2022/11/25	0.0900	0.0975
+2022/07/22	2022/09/23	0.0825	0.0900
+2022/05/20	2022/07/22	0.0775	0.0825
+2022/03/25	2022/05/20	0.0750	0.0775
+2022/01/28	2022/03/25	0.0725	0.0750
+2021/11/19	2022/01/28	0.0700	0.0725
+2020/07/24	2021/11/19	0.0725	0.0700
+2020/05/22	2020/07/24	0.0775	0.0725
+2020/04/15	2020/05/22	0.0875	0.0775
+2020/03/20	2020/04/15	0.0975	0.0875
+2020/01/17	2020/03/20	0.1000	0.0975
+2019/07/17	2020/01/17	0.1025	0.1000
+2018/11/23	2019/07/17	0.1000	0.1025
+2018/03/29	2018/11/23	0.1025	0.1000
+2017/07/21	2018/03/29	0.1050	0.1025
+2016/03/18	2017/07/21	0.1025	0.1050
+2016/01/29	2016/03/18	0.0975	0.1025
+2015/11/20	2016/01/29	0.0950	0.0975
+2015/07/24	2015/11/20	0.0925	0.0950
+2014/07/18	2015/07/24	0.0900	0.0925
+2014/01/30	2014/07/18	0.0850	0.0900
+2012/07/20	2014/01/30	0.0900	0.0850
+2010/11/19	2012/07/20	0.0950	0.0900
+2010/09/10	2010/11/19	0.1000	0.0950
+2010/03/26	2010/09/10	0.1050	0.1000
+2009/08/14	2010/03/26	0.1100	0.1050
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/03/25	2009/05/04	0.1400	0.1300
+2009/02/06	2009/03/25	0.1500	0.1400
+2008/12/12	2009/02/06	0.1550	0.1500
+2008/06/13	2008/12/12	0.1500	0.1550
+2008/04/11	2008/06/13	0.1450	0.1500
+2007/12/07	2008/04/11	0.1400	0.1450
+2007/10/12	2007/12/07	0.1350	0.1400
+2007/08/17	2007/10/12	0.1300	0.1350
+2007/06/08	2007/08/17	0.1250	0.1300
+
+;
+
+PROC SORT data=work.rates;
+	BY start_date;
+RUN;
+
+DATA dim_amort;
+	FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+    RETAIN prev_payment_date;
+	DO period=0 TO &term.*&pp.;
+		payment_date=INTNX('month', &start_date., period/&pp.*12, 'same');
+
+		IF period > 0 THEN
+			days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+		ELSE
+			days_between_payment_dates=0;
+		prev_payment_date=payment_date;
+		previous_payment_date = LAG(payment_date);
+		payment_number=period;
+		remaining_payments=&term.*&pp. - period + 1;
+		OUTPUT;
+	END;
+	DROP prev_payment_date;
+RUN;
+
+DATA work.rate2;
+	SET work.rates;
+
+	/* Calculate start_date_sharia by finding the beginning of the month */
+	IF day(start_date)=1 THEN DO;
+			start_date_sharia=start_date;
+		END;
+	ELSE DO;
+			start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+		END;
+
+	IF DAY(end_date)=1 THEN DO;
+			end_date_sharia=end_date;
+		END;
+	ELSE DO;
+			end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+		END;
+
+	/* Apply the desired format to start_date_sharia and start_date */
+	FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+	/* Create sharia_flag variable to hold the value of the macro variable */
+	sharia_flag="&sharia";
+
+	/* Converts macro variable to uppercase */
+	/* Create start_date_2 variable based on the sharia_flag variable */
+	IF sharia_flag='y' THEN DO;
+			ir_start_date=start_date_sharia;
+			ir_end_date=end_date_sharia;
+		END;
+	ELSE DO;
+			ir_start_date=start_date;
+			ir_end_date=end_date;
+		END;
+	ir_between = ir_end_date - ir_start_date;
+	DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+RUN;
+
+PROC SQL noprint;
+CREATE TABLE work.new AS
+SELECT *
+FROM (SELECT *, 
+	         CASE WHEN r.ir_start_date >= a.previous_payment_date AND r.ir_end_date <= a.payment_date THEN 1
+	              WHEN r.ir_start_date <= a.payment_date AND r.ir_end_date >= a.payment_date THEN 1
+	              ELSE 0 END AS ir_flag
+		FROM work.dim_amort a 
+		LEFT JOIN work.rate2 r
+		ON r.ir_start_date < a.payment_date AND r.ir_end_date >= a.previous_payment_date)
+		WHERE ir_flag = 1
+		;
+QUIT;
+
+PROC SORT DATA = work.new;
+BY payment_number;
+RUN;
+
+DATA work.new;
+   SET work.new;
+   BY payment_number ir_start_date;
+   IF first.payment_number THEN rank_ac=1;
+   ELSE IF last.payment_number THEN rank_ac=2;
+   ELSE rank_ac=0;
+   IF last.payment_number AND first.payment_number THEN rank_ac = 3;
+   ElSE rank_ac = rank_ac;
+   lir_start_date = LAG(ir_start_date);
+RUN;
+
+PROC SQL noprint;
+CREATE TABLE work.new2 AS
+SELECT *,
+       CASE WHEN rank_ac = 2
+            THEN payment_date - ir_start_date 
+            ELSE important_day_counter - daysinone END AS daysintwo
+	FROM (SELECT *,
+	             CASE WHEN 0 < ir_start_date - previous_payment_date < important_day_counter
+	            	  THEN ir_start_date - previous_payment_date
+	           	      WHEN 0  < important_day_counter < ir_start_date - previous_payment_date AND rank_ac = 1
+	            	  THEN ir_start_date - previous_payment_date
+	            	  WHEN 0  < important_day_counter < ir_start_date - previous_payment_date AND rank_ac = 2
+	            	  THEN ir_start_date - lir_start_date
+	            	  ELSE important_day_counter END AS daysinone
+	      FROM (SELECT *,
+	              CASE WHEN ir_between < days_between_payment_dates AND rank_ac < 3 THEN ir_between
+	                   WHEN ir_between < days_between_payment_dates AND rank_ac = 3 THEN days_between_payment_dates
+	                   ELSE days_between_payment_dates END AS important_day_counter
+	       FROM work.new) AS AQ) AS DQ
+;
+QUIT;
+
+PROC PRINT DATA = work.new2;
+FORMAT previous_payment_date lir_start_date yymmdd10.;
+VAR payment_number previous_payment_date payment_date lir_start_date ir_start_date ir_end_date 
+    days_between_payment_dates ir_between important_day_counter  first_rate 
+     second_rate rank_ac daysinone daysintwo;
+WHERE payment_number > 0;
+RUN;
+-------------------------------------------------
+Days counters fixed!
+Maybe review the code and see if there are any inefficiencies. 
+Also need to combine with the original function.
+Also, on no change days we have fixed the days counters that all the rates are represented in daysintwo instead of 1
+so we will have to go back and fix the repayment calculations to behave accordingly.
+---------------------------------------------------
+%let term = 3;
+%let pp = 1;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2020-12-27', yymmdd10.);
+%let sharia = n;
+
+
+DATA work.rates;
+	infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023/05/26	3000/06/01	0.1125	0.1175
+2023/03/31	2023/05/26	0.1075	0.1125
+2023/01/27	2023/03/31	0.1050	0.1075
+2022/11/25	2023/01/27	0.0975	0.1050
+2022/09/23	2022/11/25	0.0900	0.0975
+2022/07/22	2022/09/23	0.0825	0.0900
+2022/05/20	2022/07/22	0.0775	0.0825
+2022/03/25	2022/05/20	0.0750	0.0775
+2022/01/28	2022/03/25	0.0725	0.0750
+2021/11/19	2022/01/28	0.0700	0.0725
+2020/07/24	2021/11/19	0.0725	0.0700
+2020/05/22	2020/07/24	0.0775	0.0725
+2020/04/15	2020/05/22	0.0875	0.0775
+2020/03/20	2020/04/15	0.0975	0.0875
+2020/01/17	2020/03/20	0.1000	0.0975
+2019/07/17	2020/01/17	0.1025	0.1000
+2018/11/23	2019/07/17	0.1000	0.1025
+2018/03/29	2018/11/23	0.1025	0.1000
+2017/07/21	2018/03/29	0.1050	0.1025
+2016/03/18	2017/07/21	0.1025	0.1050
+2016/01/29	2016/03/18	0.0975	0.1025
+2015/11/20	2016/01/29	0.0950	0.0975
+2015/07/24	2015/11/20	0.0925	0.0950
+2014/07/18	2015/07/24	0.0900	0.0925
+2014/01/30	2014/07/18	0.0850	0.0900
+2012/07/20	2014/01/30	0.0900	0.0850
+2010/11/19	2012/07/20	0.0950	0.0900
+2010/09/10	2010/11/19	0.1000	0.0950
+2010/03/26	2010/09/10	0.1050	0.1000
+2009/08/14	2010/03/26	0.1100	0.1050
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/03/25	2009/05/04	0.1400	0.1300
+2009/02/06	2009/03/25	0.1500	0.1400
+2008/12/12	2009/02/06	0.1550	0.1500
+2008/06/13	2008/12/12	0.1500	0.1550
+2008/04/11	2008/06/13	0.1450	0.1500
+2007/12/07	2008/04/11	0.1400	0.1450
+2007/10/12	2007/12/07	0.1350	0.1400
+2007/08/17	2007/10/12	0.1300	0.1350
+2007/06/08	2007/08/17	0.1250	0.1300
+
+;
+
+PROC SORT data=work.rates;
+	BY start_date;
+RUN;
+
+DATA dim_amort;
+	FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+    RETAIN prev_payment_date;
+	DO period=0 TO &term.*&pp.;
+		payment_date=INTNX('month', &start_date., period/&pp.*12, 'same');
+
+		IF period > 0 THEN
+			days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+		ELSE
+			days_between_payment_dates=0;
+		prev_payment_date=payment_date;
+		previous_payment_date = LAG(payment_date);
+		payment_number=period;
+		remaining_payments=&term.*&pp. - period + 1;
+		OUTPUT;
+	END;
+	DROP prev_payment_date;
+RUN;
+
+DATA work.rate2;
+	SET work.rates;
+
+	/* Calculate start_date_sharia by finding the beginning of the month */
+	IF day(start_date)=1 THEN DO;
+			start_date_sharia=start_date;
+		END;
+	ELSE DO;
+			start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+		END;
+
+	IF DAY(end_date)=1 THEN DO;
+			end_date_sharia=end_date;
+		END;
+	ELSE DO;
+			end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+		END;
+
+	/* Apply the desired format to start_date_sharia and start_date */
+	FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+	/* Create sharia_flag variable to hold the value of the macro variable */
+	sharia_flag="&sharia";
+
+	/* Converts macro variable to uppercase */
+	/* Create start_date_2 variable based on the sharia_flag variable */
+	IF sharia_flag='y' THEN DO;
+			ir_start_date=start_date_sharia;
+			ir_end_date=end_date_sharia;
+		END;
+	ELSE DO;
+			ir_start_date=start_date;
+			ir_end_date=end_date;
+		END;
+	ir_between = ir_end_date - ir_start_date;
+	DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+RUN;
+
+PROC SQL noprint;
+CREATE TABLE work.new AS
+SELECT *
+FROM (SELECT *, 
+	         CASE WHEN r.ir_start_date >= a.previous_payment_date AND r.ir_end_date <= a.payment_date THEN 1
+	              WHEN r.ir_start_date <= a.payment_date AND r.ir_end_date >= a.payment_date THEN 1
+	              ELSE 0 END AS ir_flag
+		FROM work.dim_amort a 
+		LEFT JOIN work.rate2 r
+		ON r.ir_start_date < a.payment_date AND r.ir_end_date >= a.previous_payment_date)
+		WHERE ir_flag = 1
+		;
+QUIT;
+
+PROC SORT DATA = work.new;
+BY payment_number;
+RUN;
+
+DATA work.new;
+   SET work.new;
+   BY payment_number ir_start_date;
+   IF first.payment_number THEN rank_ac=1;
+   ELSE IF last.payment_number THEN rank_ac=2;
+   ELSE rank_ac=0;
+   IF last.payment_number AND first.payment_number THEN rank_ac = 3;
+   ElSE rank_ac = rank_ac;
+   lir_start_date = LAG(ir_start_date);
+RUN;
+
+PROC SQL noprint;
+CREATE TABLE work.new2 AS
+SELECT *,
+       CASE WHEN rank_ac = 2
+            THEN payment_date - ir_start_date 
+            WHEN rank_ac = 1 
+            THEN important_day_counter
+            ELSE important_day_counter - daysinone END AS daysintwo
+	FROM (SELECT *,
+	             CASE WHEN rank_ac = 1
+	            	  THEN ir_start_date - previous_payment_date
+	            	  WHEN rank_ac = 2
+	            	  THEN 0
+	            	  WHEN 0 < ir_start_date - previous_payment_date < important_day_counter
+	            	  THEN ir_start_date - previous_payment_date
+	            	  ELSE 0 END AS daysinone
+	      FROM (SELECT *,
+	              CASE WHEN ir_between < days_between_payment_dates AND rank_ac < 3 THEN ir_between
+	                   WHEN ir_between < days_between_payment_dates AND rank_ac = 3 THEN days_between_payment_dates
+	                   ELSE days_between_payment_dates END AS important_day_counter
+	       FROM work.new) AS AQ) AS DQ
+;
+QUIT;
+
+PROC PRINT DATA = work.new2;
+FORMAT previous_payment_date lir_start_date yymmdd10.;
+VAR payment_number previous_payment_date payment_date lir_start_date ir_start_date ir_end_date 
+    days_between_payment_dates ir_between important_day_counter  first_rate 
+     second_rate rank_ac daysinone daysintwo;
+WHERE payment_number > 0;
+RUN; 
+
+--------------------------------------
+Need to fix the case statments in the total calculations
+Find a way to do some intelligent lags
+--------------------------------------
+
+%let term = 3;
+%let pp = 1;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2020-12-27', yymmdd10.);
+%let sharia = n;
+
+
+DATA work.rates;
+	infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023/05/26	3000/06/01	0.1125	0.1175
+2023/03/31	2023/05/26	0.1075	0.1125
+2023/01/27	2023/03/31	0.1050	0.1075
+2022/11/25	2023/01/27	0.0975	0.1050
+2022/09/23	2022/11/25	0.0900	0.0975
+2022/07/22	2022/09/23	0.0825	0.0900
+2022/05/20	2022/07/22	0.0775	0.0825
+2022/03/25	2022/05/20	0.0750	0.0775
+2022/01/28	2022/03/25	0.0725	0.0750
+2021/11/19	2022/01/28	0.0700	0.0725
+2020/07/24	2021/11/19	0.0725	0.0700
+2020/05/22	2020/07/24	0.0775	0.0725
+2020/04/15	2020/05/22	0.0875	0.0775
+2020/03/20	2020/04/15	0.0975	0.0875
+2020/01/17	2020/03/20	0.1000	0.0975
+2019/07/17	2020/01/17	0.1025	0.1000
+2018/11/23	2019/07/17	0.1000	0.1025
+2018/03/29	2018/11/23	0.1025	0.1000
+2017/07/21	2018/03/29	0.1050	0.1025
+2016/03/18	2017/07/21	0.1025	0.1050
+2016/01/29	2016/03/18	0.0975	0.1025
+2015/11/20	2016/01/29	0.0950	0.0975
+2015/07/24	2015/11/20	0.0925	0.0950
+2014/07/18	2015/07/24	0.0900	0.0925
+2014/01/30	2014/07/18	0.0850	0.0900
+2012/07/20	2014/01/30	0.0900	0.0850
+2010/11/19	2012/07/20	0.0950	0.0900
+2010/09/10	2010/11/19	0.1000	0.0950
+2010/03/26	2010/09/10	0.1050	0.1000
+2009/08/14	2010/03/26	0.1100	0.1050
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/03/25	2009/05/04	0.1400	0.1300
+2009/02/06	2009/03/25	0.1500	0.1400
+2008/12/12	2009/02/06	0.1550	0.1500
+2008/06/13	2008/12/12	0.1500	0.1550
+2008/04/11	2008/06/13	0.1450	0.1500
+2007/12/07	2008/04/11	0.1400	0.1450
+2007/10/12	2007/12/07	0.1350	0.1400
+2007/08/17	2007/10/12	0.1300	0.1350
+2007/06/08	2007/08/17	0.1250	0.1300
+
+;
+
+PROC SORT data=work.rates;
+	BY start_date;
+RUN;
+PROC SORT data = work.rates;
+BY start_date;
+RUN;
+
+/*Making the straight amort macro function*/
+	%macro simple_amort(term, pp, loan_amount, start_date, sharia);
+	
+DATA dim_amort;
+	FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+    RETAIN prev_payment_date;
+	DO period=0 TO &term.*&pp.;
+		payment_date=INTNX('month', &start_date., period/&pp.*12, 'same');
+
+		IF period > 0 THEN
+			days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+		ELSE
+			days_between_payment_dates=0;
+		prev_payment_date=payment_date;
+		previous_payment_date = LAG(payment_date);
+		payment_number=period;
+		remaining_payments=&term.*&pp. - period + 1;
+		OUTPUT;
+	END;
+	DROP prev_payment_date;
+RUN;
+
+DATA work.rate2;
+	SET work.rates;
+
+	/* Calculate start_date_sharia by finding the beginning of the month */
+	IF day(start_date)=1 THEN DO;
+			start_date_sharia=start_date;
+		END;
+	ELSE DO;
+			start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+		END;
+
+	IF DAY(end_date)=1 THEN DO;
+			end_date_sharia=end_date;
+		END;
+	ELSE DO;
+			end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+		END;
+
+	/* Apply the desired format to start_date_sharia and start_date */
+	FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+	/* Create sharia_flag variable to hold the value of the macro variable */
+	sharia_flag="&sharia";
+
+	/* Converts macro variable to uppercase */
+	/* Create start_date_2 variable based on the sharia_flag variable */
+	IF sharia_flag='y' THEN DO;
+			ir_start_date=start_date_sharia;
+			ir_end_date=end_date_sharia;
+		END;
+	ELSE DO;
+			ir_start_date=start_date;
+			ir_end_date=end_date;
+		END;
+	ir_between = ir_end_date - ir_start_date;
+	DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+RUN;
+
+PROC SQL noprint;
+CREATE TABLE work.new AS
+SELECT *
+FROM (SELECT *, 
+	         CASE WHEN r.ir_start_date >= a.previous_payment_date AND r.ir_end_date <= a.payment_date THEN 1
+	              WHEN r.ir_start_date <= a.payment_date AND r.ir_end_date >= a.payment_date THEN 1
+	              ELSE 0 END AS ir_flag
+		FROM work.dim_amort a 
+		LEFT JOIN work.rate2 r
+		ON r.ir_start_date < a.payment_date AND r.ir_end_date >= a.previous_payment_date)
+		WHERE ir_flag = 1
+		;
+QUIT;
+
+PROC SORT DATA = work.new;
+BY payment_number;
+RUN;
+
+DATA work.new1;
+   SET work.new;
+   BY payment_number ir_start_date;
+   IF first.payment_number THEN rank_ac=1;
+   ELSE IF last.payment_number THEN rank_ac=2;
+   ELSE rank_ac=0;
+   IF last.payment_number AND first.payment_number THEN rank_ac = 3;
+   ElSE rank_ac = rank_ac;
+   lir_start_date = LAG(ir_start_date);
+RUN;
+
+PROC SQL noprint;
+CREATE TABLE work.dim_rates_amort AS
+SELECT *,
+       CASE WHEN rank_ac = 2
+            THEN payment_date - ir_start_date 
+            WHEN rank_ac = 1 
+            THEN important_day_counter
+            ELSE important_day_counter - daysinone END AS daysintwo
+	FROM (SELECT *,
+	             CASE WHEN rank_ac = 1
+	            	  THEN ir_start_date - previous_payment_date
+	            	  WHEN rank_ac = 2
+	            	  THEN 0
+	            	  WHEN 0 < ir_start_date - previous_payment_date < important_day_counter
+	            	  THEN ir_start_date - previous_payment_date
+	            	  ELSE 0 END AS daysinone
+	      FROM (SELECT *,
+	              CASE WHEN ir_between < days_between_payment_dates AND rank_ac < 3 THEN ir_between
+	                   WHEN ir_between < days_between_payment_dates AND rank_ac = 3 THEN days_between_payment_dates
+	                   ELSE days_between_payment_dates END AS important_day_counter
+	       FROM work.new1) AS AQ) AS DQ
+;
+QUIT;
+
+/* This data step uses a for loop to create the actual amort schedule. */
+
+	DATA work.amort_schedule;
+		SET work.dim_rates_amort;
+
+/* The previous closing balance needs to be retained throughout the for loop so that the next opening balance can use that value */
+		RETAIN closing_balance;
+
+/* First work out effective interest rates to simplify repayment and interest formulas. Suffix 'Rchange' indicates that these rates are used 
+when there is a rate change. 'noRchange' is the rate used when there is no rate change. */
+		first_eff_rate_Rchange=first_rate / 365 * daysinone;
+		second_eff_rate_Rchange=second_rate / 365 * daysintwo;
+		eff_rate_noRchange = second_rate / 365 * daysinone;
+
+/* We use a case statement to check when the period is 0 as this needs to reflect the initial condition of the loan.
+
+fr_repayment = repayment amount under first rate
+fr_cap = capital portion of repayment under first rate
+fr_int = interest portion of repayment under first rate
+
+sr_X = fr equivalents just under the second interest rate.*/
+
+		IF period=0 THEN
+			DO;
+				opening_balance=&loan_amount.;
+				fr_repayment=0;
+				fr_cap=0;
+				fr_int=0;
+				sr_repayment=0;
+				sr_cap=0;
+				sr_int=0;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=&loan_amount.;
+			END;
+
+/* Now we begin to create the actual amort schedule. */
+		ELSE
+			DO;
+				opening_balance=closing_balance;
+
+				IF daysinone=0 THEN
+					DO;
+						fr_repayment=0;
+						fr_int=0;
+					END;			
+/* Otherwise, there was a rate change and we will use the first rate. */
+				ELSE
+					DO;
+						fr_repayment=opening_balance/((1-(1+first_eff_rate_Rchange)**(-remaining_payments))/(first_eff_rate_Rchange))*daysinone/days_between_payment_dates;
+						fr_int=opening_balance * first_eff_rate_Rchange;
+					END;
+				fr_cap=fr_repayment - fr_int;
+
+/* If daysintwo=0 then there was no rate changes, so sr_X should be 0 */
+				IF daysintwo=0 THEN
+					DO;
+						sr_repayment=0;
+						sr_int=0;
+					END;
+/* Otherwise there was a rate change and sr_X needs to be calculated. */
+				ELSE
+					DO;
+						sr_repayment=opening_balance/((1-(1+second_eff_rate_Rchange)**(-remaining_payments))/(second_eff_rate_Rchange))*daysintwo/days_between_payment_dates;
+						sr_int=opening_balance*second_eff_rate_Rchange;
+					END;
+				sr_cap=sr_repayment - sr_int;
+
+/* calculating totals */
+               IF rank_ac = 1 THEN DO;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=closing_balance;
+				END;
+			   IF rank_ac = 0 THEN DO;
+			    tot_rep=1;
+				tot_int=1;
+				tot_cap=1;
+				closing_balance=closing_balance;
+				END;
+			   IF rank_ac=2 THEN DO;
+			    tot_rep=1;
+				tot_int=1;
+				tot_cap=1;
+				closing_balance=closing_balance-tot_cap;
+				END;
+			   IF rank_ac = 3 THEN DO;
+			    tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=closing_balance-tot_cap;
+				END;
+			END;
+	RUN;
+
+
+/* printing the resulting amort schedule */
+	PROC PRINT DATA=work.amort_schedule;
+		VAR payment_date payment_number days_between_payment_dates ir_start_date 
+			first_rate ir_end_date second_rate daysinone fr_int fr_repayment  
+			daysintwo sr_int sr_repayment tot_int tot_cap tot_rep closing_balance;
+			WHERE payment_number > 0;
+	RUN;
+
+%mend;
+/*
+%let term = 3;
+	%let pp = 12;
+	%let total_payments = &term. * &pp.;
+	%let loan_amount = 1000000;
+	%let start_date = input('2019-12-14', yymmdd10.);
+	%let sharia = n;
+	*/
+	
+%simple_amort(3, 1, 100000, '14DEC2020'd, n);
+-----------------------------------
+Must confirm that the calculations are being done correctly....
+----------------------------------
+
+%let term = 3;
+%let pp = 1;
+%let total_payments = &term. * &pp.;
+%let loan_amount = 1000000;
+%let start_date = input('2020-12-27', yymmdd10.);
+%let sharia = n;
+
+
+DATA work.rates;
+	infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023/05/26	3000/06/01	0.1125	0.1175
+2023/03/31	2023/05/26	0.1075	0.1125
+2023/01/27	2023/03/31	0.1050	0.1075
+2022/11/25	2023/01/27	0.0975	0.1050
+2022/09/23	2022/11/25	0.0900	0.0975
+2022/07/22	2022/09/23	0.0825	0.0900
+2022/05/20	2022/07/22	0.0775	0.0825
+2022/03/25	2022/05/20	0.0750	0.0775
+2022/01/28	2022/03/25	0.0725	0.0750
+2021/11/19	2022/01/28	0.0700	0.0725
+2020/07/24	2021/11/19	0.0725	0.0700
+2020/05/22	2020/07/24	0.0775	0.0725
+2020/04/15	2020/05/22	0.0875	0.0775
+2020/03/20	2020/04/15	0.0975	0.0875
+2020/01/17	2020/03/20	0.1000	0.0975
+2019/07/17	2020/01/17	0.1025	0.1000
+2018/11/23	2019/07/17	0.1000	0.1025
+2018/03/29	2018/11/23	0.1025	0.1000
+2017/07/21	2018/03/29	0.1050	0.1025
+2016/03/18	2017/07/21	0.1025	0.1050
+2016/01/29	2016/03/18	0.0975	0.1025
+2015/11/20	2016/01/29	0.0950	0.0975
+2015/07/24	2015/11/20	0.0925	0.0950
+2014/07/18	2015/07/24	0.0900	0.0925
+2014/01/30	2014/07/18	0.0850	0.0900
+2012/07/20	2014/01/30	0.0900	0.0850
+2010/11/19	2012/07/20	0.0950	0.0900
+2010/09/10	2010/11/19	0.1000	0.0950
+2010/03/26	2010/09/10	0.1050	0.1000
+2009/08/14	2010/03/26	0.1100	0.1050
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/03/25	2009/05/04	0.1400	0.1300
+2009/02/06	2009/03/25	0.1500	0.1400
+2008/12/12	2009/02/06	0.1550	0.1500
+2008/06/13	2008/12/12	0.1500	0.1550
+2008/04/11	2008/06/13	0.1450	0.1500
+2007/12/07	2008/04/11	0.1400	0.1450
+2007/10/12	2007/12/07	0.1350	0.1400
+2007/08/17	2007/10/12	0.1300	0.1350
+2007/06/08	2007/08/17	0.1250	0.1300
+
+;
+
+PROC SORT data=work.rates;
+	BY start_date;
+RUN;
+PROC SORT data = work.rates;
+BY start_date;
+RUN;
+
+/*Making the straight amort macro function*/
+	%macro simple_amort(term, pp, loan_amount, start_date, sharia);
+	
+DATA dim_amort;
+	FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+    RETAIN prev_payment_date;
+	DO period=0 TO &term.*&pp.;
+		payment_date=INTNX('month', &start_date., period/&pp.*12, 'same');
+
+		IF period > 0 THEN
+			days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+		ELSE
+			days_between_payment_dates=0;
+		prev_payment_date=payment_date;
+		previous_payment_date = LAG(payment_date);
+		payment_number=period;
+		remaining_payments=&term.*&pp. - period + 1;
+		OUTPUT;
+	END;
+	DROP prev_payment_date;
+RUN;
+
+DATA work.rate2;
+	SET work.rates;
+
+	/* Calculate start_date_sharia by finding the beginning of the month */
+	IF day(start_date)=1 THEN DO;
+			start_date_sharia=start_date;
+		END;
+	ELSE DO;
+			start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+		END;
+
+	IF DAY(end_date)=1 THEN DO;
+			end_date_sharia=end_date;
+		END;
+	ELSE DO;
+			end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+		END;
+
+	/* Apply the desired format to start_date_sharia and start_date */
+	FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+	/* Create sharia_flag variable to hold the value of the macro variable */
+	sharia_flag="&sharia";
+
+	/* Converts macro variable to uppercase */
+	/* Create start_date_2 variable based on the sharia_flag variable */
+	IF sharia_flag='y' THEN DO;
+			ir_start_date=start_date_sharia;
+			ir_end_date=end_date_sharia;
+		END;
+	ELSE DO;
+			ir_start_date=start_date;
+			ir_end_date=end_date;
+		END;
+	ir_between = ir_end_date - ir_start_date;
+	DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+RUN;
+
+PROC SQL noprint;
+CREATE TABLE work.new AS
+SELECT *
+FROM (SELECT *, 
+	         CASE WHEN r.ir_start_date >= a.previous_payment_date AND r.ir_end_date <= a.payment_date THEN 1
+	              WHEN r.ir_start_date <= a.payment_date AND r.ir_end_date >= a.payment_date THEN 1
+	              ELSE 0 END AS ir_flag
+		FROM work.dim_amort a 
+		LEFT JOIN work.rate2 r
+		ON r.ir_start_date < a.payment_date AND r.ir_end_date >= a.previous_payment_date)
+		WHERE ir_flag = 1
+		;
+QUIT;
+
+PROC SORT DATA = work.new;
+BY payment_number;
+RUN;
+
+DATA work.new;
+SET work.new;
+BY payment_number ir_start_date;
+RETAIN rank_ir_change;
+IF first.payment_number THEN rank_ir_change=1;
+ELSE rank_ir_change+1;
+RUN;
+
+DATA work.new1;
+   SET work.new;
+   BY payment_number ir_start_date;
+   IF first.payment_number THEN rank_ac=1;
+   ELSE IF last.payment_number THEN rank_ac=2;
+   ELSE rank_ac=0;
+   IF last.payment_number AND first.payment_number THEN rank_ac = 3;
+   ElSE rank_ac = rank_ac;
+   lir_start_date = LAG(ir_start_date);
+RUN;
+
+PROC SQL noprint;
+CREATE TABLE work.dim_rates_amort AS
+SELECT *,
+       CASE WHEN rank_ac = 2
+            THEN payment_date - ir_start_date 
+            WHEN rank_ac = 1 
+            THEN important_day_counter
+            ELSE important_day_counter - daysinone END AS daysintwo
+	FROM (SELECT *,
+	             CASE WHEN rank_ac = 1
+	            	  THEN ir_start_date - previous_payment_date
+	            	  WHEN rank_ac = 2
+	            	  THEN 0
+	            	  WHEN 0 < ir_start_date - previous_payment_date < important_day_counter
+	            	  THEN ir_start_date - previous_payment_date
+	            	  ELSE 0 END AS daysinone
+	      FROM (SELECT *,
+	              CASE WHEN ir_between < days_between_payment_dates AND rank_ac < 3 THEN ir_between
+	                   WHEN ir_between < days_between_payment_dates AND rank_ac = 3 THEN days_between_payment_dates
+	                   ELSE days_between_payment_dates END AS important_day_counter
+	       FROM work.new1) AS AQ) AS DQ
+;
+QUIT;
+
+/* This data step uses a for loop to create the actual amort schedule. */
+
+	DATA work.amort_schedule;
+		SET work.dim_rates_amort;
+
+/* The previous closing balance needs to be retained throughout the for loop so that the next opening balance can use that value */
+		RETAIN closing_balance tot_int tot_cap tot_rep;
+
+/* First work out effective interest rates to simplify repayment and interest formulas. Suffix 'Rchange' indicates that these rates are used 
+when there is a rate change. 'noRchange' is the rate used when there is no rate change. */
+		first_eff_rate_Rchange=first_rate / 365 * daysinone;
+		second_eff_rate_Rchange=second_rate / 365 * daysintwo;
+		eff_rate_noRchange = second_rate / 365 * daysinone;
+
+/* We use a case statement to check when the period is 0 as this needs to reflect the initial condition of the loan.
+
+fr_repayment = repayment amount under first rate
+fr_cap = capital portion of repayment under first rate
+fr_int = interest portion of repayment under first rate
+
+sr_X = fr equivalents just under the second interest rate.*/
+
+		IF period=0 THEN
+			DO;
+				opening_balance=&loan_amount.;
+				fr_repayment=0;
+				fr_cap=0;
+				fr_int=0;
+				sr_repayment=0;
+				sr_cap=0;
+				sr_int=0;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=&loan_amount.;
+			END;
+
+/* Now we begin to create the actual amort schedule. */
+		ELSE
+			DO;
+				opening_balance=closing_balance;
+
+				IF daysinone=0 THEN
+					DO;
+						fr_repayment=0;
+						fr_int=0;
+					END;			
+/* Otherwise, there was a rate change and we will use the first rate. */
+				ELSE
+					DO;
+						fr_repayment=opening_balance/((1-(1+first_eff_rate_Rchange)**(-remaining_payments))/(first_eff_rate_Rchange))*daysinone/days_between_payment_dates;
+						fr_int=opening_balance * first_eff_rate_Rchange;
+					END;
+				fr_cap=fr_repayment - fr_int;
+
+/* If daysintwo=0 then there was no rate changes, so sr_X should be 0 */
+				IF daysintwo=0 THEN
+					DO;
+						sr_repayment=0;
+						sr_int=0;
+					END;
+/* Otherwise there was a rate change and sr_X needs to be calculated. */
+				ELSE
+					DO;
+						sr_repayment=opening_balance/((1-(1+second_eff_rate_Rchange)**(-remaining_payments))/(second_eff_rate_Rchange))*daysintwo/days_between_payment_dates;
+						sr_int=opening_balance*second_eff_rate_Rchange;
+					END;
+				sr_cap=sr_repayment - sr_int;
+
+/* calculating totals */
+               IF rank_ir_change = 1 THEN DO;
+                 tot_int = fr_int + sr_int;
+                 tot_cap = fr_cap + fr_cap;
+                 tot_rep = fr_repayment + sr_repayment;
+                 END;
+               ELSE DO;
+                 tot_int = fr_int + sr_int + tot_int;
+                 tot_cap = fr_cap + sr_cap + tot_cap;
+                 tot_rep = fr_repayment + sr_repayment + tot_rep;
+                 END;
+               IF rank_ac = 3 THEN closing_balance = opening_balance - tot_cap;
+               ELSE IF rank_ac = 1 THEN closing_balance = opening_balance;
+               ELSE IF rank_ac = 0 THEN cloosing_balance = opening_balance;
+               ELSE IF rank_ac = 2 THEN closing_balance = opening_balance - tot_cap;
+			END;
+	RUN;
+
+
+/* printing the resulting amort schedule */
+	PROC PRINT DATA=work.amort_schedule;
+		VAR payment_date payment_number days_between_payment_dates ir_start_date 
+			first_rate ir_end_date second_rate daysinone fr_int fr_repayment  
+			daysintwo sr_int sr_repayment tot_int tot_cap tot_rep closing_balance rank_ir_change rank_ac;
+			WHERE payment_number > 0;
+	RUN;
+
+%mend;
+/*
+%let term = 3;
+	%let pp = 12;
+	%let total_payments = &term. * &pp.;
+	%let loan_amount = 1000000;
+	%let start_date = input('2019-12-14', yymmdd10.);
+	%let sharia = n;
+	*/
+	
+%simple_amort(3, 1, 100000, '14DEC2020'd, n);
+
+--------------------------------------------------------------------
+Working now.
+Should check, different dates, sharia.
+--------------------------------------------------------------------
+
+DATA work.rates;
+	infile datalines delimiter='	';
+	format start_date end_date yymmdd10.;
+	INPUT start_date : yymmdd10. end_date : yymmdd10. first_rate second_rate;
+	DATALINES;
+2023/05/26	3000/06/01	0.1125	0.1175
+2023/03/31	2023/05/26	0.1075	0.1125
+2023/01/27	2023/03/31	0.1050	0.1075
+2022/11/25	2023/01/27	0.0975	0.1050
+2022/09/23	2022/11/25	0.0900	0.0975
+2022/07/22	2022/09/23	0.0825	0.0900
+2022/05/20	2022/07/22	0.0775	0.0825
+2022/03/25	2022/05/20	0.0750	0.0775
+2022/01/28	2022/03/25	0.0725	0.0750
+2021/11/19	2022/01/28	0.0700	0.0725
+2020/07/24	2021/11/19	0.0725	0.0700
+2020/05/22	2020/07/24	0.0775	0.0725
+2020/04/15	2020/05/22	0.0875	0.0775
+2020/03/20	2020/04/15	0.0975	0.0875
+2020/01/17	2020/03/20	0.1000	0.0975
+2019/07/17	2020/01/17	0.1025	0.1000
+2018/11/23	2019/07/17	0.1000	0.1025
+2018/03/29	2018/11/23	0.1025	0.1000
+2017/07/21	2018/03/29	0.1050	0.1025
+2016/03/18	2017/07/21	0.1025	0.1050
+2016/01/29	2016/03/18	0.0975	0.1025
+2015/11/20	2016/01/29	0.0950	0.0975
+2015/07/24	2015/11/20	0.0925	0.0950
+2014/07/18	2015/07/24	0.0900	0.0925
+2014/01/30	2014/07/18	0.0850	0.0900
+2012/07/20	2014/01/30	0.0900	0.0850
+2010/11/19	2012/07/20	0.0950	0.0900
+2010/09/10	2010/11/19	0.1000	0.0950
+2010/03/26	2010/09/10	0.1050	0.1000
+2009/08/14	2010/03/26	0.1100	0.1050
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/05/29	2009/08/14	0.1200	0.1100
+2009/03/25	2009/05/04	0.1400	0.1300
+2009/02/06	2009/03/25	0.1500	0.1400
+2008/12/12	2009/02/06	0.1550	0.1500
+2008/06/13	2008/12/12	0.1500	0.1550
+2008/04/11	2008/06/13	0.1450	0.1500
+2007/12/07	2008/04/11	0.1400	0.1450
+2007/10/12	2007/12/07	0.1350	0.1400
+2007/08/17	2007/10/12	0.1300	0.1350
+2007/06/08	2007/08/17	0.1250	0.1300
+
+;
+
+PROC SORT data=work.rates;
+	BY start_date;
+RUN;
+PROC SORT data = work.rates;
+BY start_date;
+RUN;
+
+/*Making the straight amort macro function*/
+	%macro simple_amort(term, pp, loan_amount, start_date, sharia);
+	
+DATA dim_amort;
+	FORMAT payment_date yymmdd10. days_between_payment_dates best12.;
+    RETAIN prev_payment_date;
+	DO period=0 TO &term.*&pp.;
+		payment_date=INTNX('month', &start_date., period/&pp.*12, 'same');
+
+		IF period > 0 THEN
+			days_between_payment_dates=INTCK('day', prev_payment_date, payment_date);
+		ELSE
+			days_between_payment_dates=0;
+		prev_payment_date=payment_date;
+		previous_payment_date = LAG(payment_date);
+		payment_number=period;
+		remaining_payments=&term.*&pp. - period + 1;
+		OUTPUT;
+	END;
+	DROP prev_payment_date;
+RUN;
+
+DATA work.rate2;
+	SET work.rates;
+
+	/* Calculate start_date_sharia by finding the beginning of the month */
+	IF day(start_date)=1 THEN DO;
+			start_date_sharia=start_date;
+		END;
+	ELSE DO;
+			start_date_sharia=INTNX('MONTH', start_date, 1, 'BEGIN');
+		END;
+
+	IF DAY(end_date)=1 THEN DO;
+			end_date_sharia=end_date;
+		END;
+	ELSE DO;
+			end_date_sharia=INTNX('MONTH', end_date, 1 , 'BEGIN');
+		END;
+
+	/* Apply the desired format to start_date_sharia and start_date */
+	FORMAT start_date_sharia ir_start_date end_date_sharia ir_end_date yymmdd10.;
+
+	/* Create sharia_flag variable to hold the value of the macro variable */
+	sharia_flag="&sharia";
+
+	/* Converts macro variable to uppercase */
+	/* Create start_date_2 variable based on the sharia_flag variable */
+	IF sharia_flag='y' THEN DO;
+			ir_start_date=start_date_sharia;
+			ir_end_date=end_date_sharia;
+		END;
+	ELSE DO;
+			ir_start_date=start_date;
+			ir_end_date=end_date;
+		END;
+	ir_between = ir_end_date - ir_start_date;
+	DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+RUN;
+
+PROC SQL noprint;
+CREATE TABLE work.new AS
+SELECT *
+FROM (SELECT *, 
+	         CASE WHEN r.ir_start_date >= a.previous_payment_date AND r.ir_end_date <= a.payment_date THEN 1
+	              WHEN r.ir_start_date <= a.payment_date AND r.ir_end_date >= a.payment_date THEN 1
+	              ELSE 0 END AS ir_flag
+		FROM work.dim_amort a 
+		LEFT JOIN work.rate2 r
+		ON r.ir_start_date < a.payment_date AND r.ir_end_date >= a.previous_payment_date)
+		WHERE ir_flag = 1
+		;
+QUIT;
+
+PROC SORT DATA = work.new;
+BY payment_number;
+RUN;
+
+DATA work.new;
+SET work.new;
+BY payment_number ir_start_date;
+RETAIN rank_ir_change;
+IF first.payment_number THEN rank_ir_change=1;
+ELSE rank_ir_change+1;
+RUN;
+
+DATA work.new1;
+   SET work.new;
+   BY payment_number ir_start_date;
+   IF first.payment_number THEN rank_ac=1;
+   ELSE IF last.payment_number THEN rank_ac=2;
+   ELSE rank_ac=0;
+   IF last.payment_number AND first.payment_number THEN rank_ac = 3;
+   ElSE rank_ac = rank_ac;
+   lir_start_date = LAG(ir_start_date);
+RUN;
+
+PROC SQL noprint;
+CREATE TABLE work.dim_rates_amort AS
+SELECT *,
+       CASE WHEN rank_ac = 2
+            THEN payment_date - ir_start_date 
+            WHEN rank_ac = 1 
+            THEN important_day_counter
+            ELSE important_day_counter - daysinone END AS daysintwo
+	FROM (SELECT *,
+	             CASE WHEN rank_ac = 1
+	            	  THEN ir_start_date - previous_payment_date
+	            	  WHEN rank_ac = 2
+	            	  THEN 0
+	            	  WHEN 0 < ir_start_date - previous_payment_date < important_day_counter
+	            	  THEN ir_start_date - previous_payment_date
+	            	  ELSE 0 END AS daysinone
+	      FROM (SELECT *,
+	              CASE WHEN ir_between < days_between_payment_dates AND rank_ac < 3 THEN ir_between
+	                   WHEN ir_between < days_between_payment_dates AND rank_ac = 3 THEN days_between_payment_dates
+	                   ELSE days_between_payment_dates END AS important_day_counter
+	       FROM work.new1) AS AQ) AS DQ
+;
+QUIT;
+
+/* This data step uses a for loop to create the actual amort schedule. */
+
+	DATA work.amort_schedule;
+		SET work.dim_rates_amort;
+
+/* The previous closing balance needs to be retained throughout the for loop so that the next opening balance can use that value */
+		RETAIN closing_balance tot_int tot_cap tot_rep;
+
+/* First work out effective interest rates to simplify repayment and interest formulas. Suffix 'Rchange' indicates that these rates are used 
+when there is a rate change. 'noRchange' is the rate used when there is no rate change. */
+		first_eff_rate_Rchange=first_rate / 365 * daysinone;
+		second_eff_rate_Rchange=second_rate / 365 * daysintwo;
+		eff_rate_noRchange = second_rate / 365 * daysinone;
+
+/* We use a case statement to check when the period is 0 as this needs to reflect the initial condition of the loan.
+
+fr_repayment = repayment amount under first rate
+fr_cap = capital portion of repayment under first rate
+fr_int = interest portion of repayment under first rate
+
+sr_X = fr equivalents just under the second interest rate.*/
+
+		IF period=0 THEN
+			DO;
+				opening_balance=&loan_amount.;
+				fr_repayment=0;
+				fr_cap=0;
+				fr_int=0;
+				sr_repayment=0;
+				sr_cap=0;
+				sr_int=0;
+				tot_rep=fr_repayment + sr_repayment;
+				tot_int=fr_int + sr_int;
+				tot_cap=fr_cap + sr_cap;
+				closing_balance=&loan_amount.;
+			END;
+
+/* Now we begin to create the actual amort schedule. */
+		ELSE
+			DO;
+				opening_balance=closing_balance;
+
+				IF daysinone=0 THEN
+					DO;
+						fr_repayment=0;
+						fr_int=0;
+					END;			
+/* Otherwise, there was a rate change and we will use the first rate. */
+				ELSE
+					DO;
+						fr_repayment=opening_balance/((1-(1+first_eff_rate_Rchange)**(-remaining_payments))/(first_eff_rate_Rchange))*daysinone/days_between_payment_dates;
+						fr_int=opening_balance * first_eff_rate_Rchange;
+					END;
+				fr_cap=fr_repayment - fr_int;
+
+/* If daysintwo=0 then there was no rate changes, so sr_X should be 0 */
+				IF daysintwo=0 THEN
+					DO;
+						sr_repayment=0;
+						sr_int=0;
+					END;
+/* Otherwise there was a rate change and sr_X needs to be calculated. */
+				ELSE
+					DO;
+						sr_repayment=opening_balance/((1-(1+second_eff_rate_Rchange)**(-remaining_payments))/(second_eff_rate_Rchange))*daysintwo/days_between_payment_dates;
+						sr_int=opening_balance*second_eff_rate_Rchange;
+					END;
+				sr_cap=sr_repayment - sr_int;
+
+/* calculating totals */
+               IF rank_ir_change = 1 THEN DO;
+                 tot_int = fr_int + sr_int;
+                 tot_cap = fr_cap + sr_cap;
+                 tot_rep = fr_repayment + sr_repayment;
+                 END;
+               ELSE DO;
+                 tot_int = fr_int + sr_int + tot_int;
+                 tot_cap = fr_cap + sr_cap + tot_cap;
+                 tot_rep = fr_repayment + sr_repayment + tot_rep;
+                 END;
+               IF rank_ac = 3 THEN closing_balance = opening_balance - tot_cap;
+               ELSE IF rank_ac = 1 THEN closing_balance = opening_balance;
+               ELSE IF rank_ac = 0 THEN cloosing_balance = opening_balance;
+               ELSE IF rank_ac = 2 THEN closing_balance = opening_balance - tot_cap;
+			END;
+	RUN;
+
+
+/* printing the resulting amort schedule */
+	PROC PRINT DATA=work.amort_schedule;
+		VAR payment_date payment_number days_between_payment_dates ir_start_date 
+			first_rate ir_end_date second_rate daysinone fr_int fr_cap fr_repayment  
+			daysintwo sr_int sr_cap sr_repayment tot_int tot_cap tot_rep closing_balance rank_ir_change rank_ac;
+			WHERE payment_number > 0;
+	RUN;
+
+%mend;
+/*
+%let term = 3;
+	%let pp = 12;
+	%let total_payments = &term. * &pp.;
+	%let loan_amount = 1000000;
+	%let start_date = input('2019-12-14', yymmdd10.);
+	%let sharia = n;
+	*/
+	
+%simple_amort(3, 12, 100000, '14DEC2020'd, n);
