@@ -1,0 +1,48 @@
+%MACRO amort_frame(in_table_amort, in_table_rates, out_table, ir_change_no);
+
+PROC SQL;
+	CREATE TABLE work.&out_table AS
+		SELECT *
+		FROM ( SELECT a.*,
+
+			      CASE WHEN r.ir_start_date >= a.prior_month AND r.ir_end_date <= a.date THEN 1
+				   WHEN r.ir_start_date <= a.date AND r.ir_end_date >= a.date THEN 1
+				   ELSE 0 END
+		              AS ir_flag,
+
+	                      r.ir_start_date,
+			      r.ir_end_date,
+			      r.first_rate,
+		              r.second_rate,
+
+                              CASE WHEN num_days - (date - ir_start_date) <= 0 THEN a.num_days
+                                   ELSE num_days - (date - ir_start_date) END
+			      AS daysinone,
+		
+			      CASE WHEN date - ir_start_date < num_days THEN date - ir_start_date
+				   ELSE 0 END
+			      AS daysintwo
+		       FROM work.&in_table_amor AS a LEFT JOIN work.&in_table_rates AS r 
+			    ON r.ir_start_date < a.date AND r.ir_end_date >= a.prior_month)
+		 WHERE ir_flag = 1;
+QUIT;
+
+DATA work.&out_table;
+	SET work.&out_table END = last;
+	RETAIN ir_change;
+
+	IF month = 1 THEN ir_change = 1;
+	ELSE IF ir_start_date = LAG(ir_start_date) OR month = 0 THEN ir_change = ir_change;
+	ELSE ir_change + 1;
+
+	IF daysintwo = 0 THEN DO;
+		daysintwo = num_days;
+		daysinone = 0;
+	END;
+
+	IF last THEN DO;
+		CALL SYMPUTX('&ir_change_no.", ir_change, 'G');
+	END;
+RUN;
+
+%MEND amort_frame;

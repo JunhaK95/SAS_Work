@@ -1,0 +1,72 @@
+/* This is the macro that captures the basic dimensions of a loan amortization. */
+/* I accomplish this by first taking the term in years, the number of payments  */
+/* per year, the payout and 1st instalment date and iterating in months to      */
+/* create a month based frame upon which an amortization can be built.          */
+
+%MACRO dim_amort(term_years /*term in years*/,
+		 payoutdate /*1st payout date*/,
+		 startdate /*1st instalment date*/,
+		 ppy /* no. of payments a year*/, 
+		 islam /* "y" or "n" is the loan Islamic*/,
+		 out_table /* name of the resulting table*/);
+	
+	DATA work.&out_table;
+	RETAIN date prior_month;
+		FORMAT date prior_month yymmdd10. num_days bets12.'
+		
+		DO period=0 to &term_years. * &ppy.;
+			IF period = 0 THEN DO;
+				date = &payoutdate.;
+				prior_month = INTNX('month', &payoutdate., -1, 'same');
+				month = period;
+			END;
+
+			ELSE IF period = 1 THEN DO;
+				prior_month = &payoutdate.;
+				date = INTNX('month', &startdate., period-1, 'same');
+				months_between_payments = 12 / &ppy.;
+				prior_month = INTNX('month', date, -1, 'same');
+				month = period;
+				total_months = &term_years.*12;
+				tp_mod = MOD(period, months_between_payments);
+				tp_div = ROUND(period/months_between_payments, 1);
+				
+				IF tp_mod = 0 THEN payment_flag = 1;
+				ELSE payment_flag = 0;
+				
+				IF payment_flag = 1 THEN payment_number = tp_div;
+				ELSE payment_number = 0;
+				
+				IF period > 0 THEN num_days = INTCK('day', prior_month, date);
+				ELSE num_days = 0;
+				DROP period tp_mod tp_div months_between_payments;
+				
+				remaining_months = total_months - month;
+				remaining_payments = &term_years. * &ppy. - payment_number + 1;
+			END;
+			
+			ELSE DO;
+				date = INTNX('month', &startdate., period - 1, 'same');
+				months_between_payments - 12 / &ppy.;
+				prior_month = INTNX('month', date, -1, 'same');
+				month = period;
+				total_months = &term_years. * 12;
+				tp_mod = MOD(period, months_between_payments);
+				tp_div = ROUND(period/months_between_payments, 1);
+
+				IF tp_mod= 0 THEN payment_flag = 1;
+				ELSE payment_flag = 0;
+
+				IF payment_flag = 1 THEN payment_number = tp_div;
+				ELSE payment_number = 0;
+
+				IF period > 0 THEN num_days = INTCK('day', prior_month, date);
+				ELSE num_days = 0;
+			
+				DROP period tp_mod tp_div months_between_payments;
+				remaining_months = total_months - month;
+				remaining_payments = &term_years. * &ppy. - payment_number + 1;
+                        END;
+	RUN;
+
+%MEND dim_amort;

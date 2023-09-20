@@ -1,0 +1,39 @@
+%MACRO bisection(balance, margin, rate1, d1, rate2, d2, start_date, prior_date, 
+		 term, ppy, tol, maxiter, target, out_table);
+
+	%LET lower = 100000000;
+	%LET upper = 0;
+	%LET f_mid = 10000000;
+	%LET iter = 0;
+	
+	%DO %UNTIL (%SYSEVALF((&f_mid - &target)**2 <= &tol) OR %SYSEVALF(&iter >= &max_iter));
+
+		%LET iter = %SYSEVALF(&iter +1);
+	
+		%LET mid = %SYSEVALF((&upper + &lower)/2);
+		%amort_inner(&mid, &balance., &margin., &rate1., &d1., &rate2., &d2., &start_date., &prior_date.,
+			     &term., &ppy., result = f_mid, out_table = gs_mid);
+		%amort_inner(&lower, &balance., &margin., &rate1., &d1., &rate2., &d2., &start_date., &prior_date.,
+			     &term., &ppy., result = f_lower, out_table = gs_lower);
+		%amort_inner(&upper, &balance., &margin., &rate1., &d1., &rate2., &d2., &start_date., &prior_date.,
+			     &term., &ppy., result = f_upper, out_table = gs_upper);
+
+		PROC SQL;
+		DROP TABLE gs_mid;
+		DROP TABLE gs_lower;
+		DROP TABLE gs_upper;
+		QUIT;
+		
+		%IF %SYSEVALF(&f_mid < &target) %THEN %DO;
+			%LET lower = &mid;
+		%END;
+
+		%ELSE %IF %SYSEVALF(&f_mid > &target) %THEN %DO;
+			%LET upper = &mid;
+		%END;
+	%END;
+
+	%amort_inner(&mid, &balance., &margin., &rate1., &d1., &rate2., &d2., &start_date., &prior_date.,
+		     &term., &ppy., result = f_mid, out_table = &out_table);
+
+%MEND bisection;

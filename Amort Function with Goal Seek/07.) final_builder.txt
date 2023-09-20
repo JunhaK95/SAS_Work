@@ -1,0 +1,78 @@
+%MACRO final_builder(in_table, ir_change_num, ppy, tartget, tol, maxiter, loan_amt);
+	
+	%LET o_balance = &loan_amt.;
+	
+	%DO i = 1 %TO &ir_change_num;
+		DATA _NULL_;
+			SET &in_table_&i.;
+			IF _N_ = 1 THEN DO;
+				CALL SYMPUTX("term", remaining_payments);
+				CALL SYMPUTX("pdate", prior_month);
+				CALL SYMPUTX("idate", date);
+				CALL SYMPUTX("rate1", first_rate);
+				CALL SYMPUTX("d1", daysinone);
+				CALL SYMPUTX("rate2", second_rate);
+				CALL SYMPUTX("d2", daysintwo);
+			END;
+		RUN;
+
+		%LET lower = 100000000;
+		%LET upper = 0;
+		%LET f_mid = 1000000;
+		%LET iter = 0;
+			
+		%DO UNTIL (%SYSEVALF((&f_mid - &target) **2 <= &tol) OR %SYSEVALF(&iter <= &max_iter));
+			%LET iter = %SYSEVALF(&iter + 1);
+			%LET mid = %SYSEVALF((&upper + &lower)/2);
+			
+			%amort_inner(&mid, &o_balance., &margin., &rate1., &d1., &rate2., &d2., &idate., &pdate.,
+				     &term., &ppy., result = f_mid, out_table = gs_mid);
+			%amort_inner(&lower, &o_balance., &margin., &rate1., &d1., &rate2., &d2., &idate., &pdate.,
+				     &term., &ppy., result = f_lower, out_table = gs_lower);
+			%amort_inner(&upper, &o_balance., &margin., &rate1., &d1., &rate2., &d2., &idate., &pdate.,
+				     &term., &ppy., result = f_upper, out_table = gs_upper);
+			
+			PROC SQL;
+				DROP TABLE gs_mid;
+				DROP TABLE gs_lower;
+				DROP TABLE gs_upper;
+			QUIT;
+		
+			%IF %SYSEVALF(&f_mid < &target) %THEN %DO;
+				%LET lower = &mid;
+			%END;
+			
+			%IF %SYSEVALF(&f_mid > &target) %THEN %DO;
+				%LET upper = &mid;
+			%END;
+		%END;
+	
+		%amort_inner(&mid, &o_balance., &margin., &rate1., &d1., &rate2., &d2., &idate., &pdate.,
+		   	     &term., &ppy., result = f_mid, out_table = gs_&i);
+
+
+		PROC SQL;
+			CREATE TABLE accno_&i AS 
+			SELECT a.*,
+			       b.fr_int,
+			       b.sr_int,
+			       b.tot_int,
+			       b.tot_cap,
+			       b.tot_rep,
+			       b.opening_balance,
+			       b.closing_balance
+			FROM &in_table_&i. AS a
+			JOIN gs_&i. AS b ON a.date = b.date;
+			DROP TABLE gs_&i.;
+		QUIT;
+		
+		DATA _NULL_;
+			SET accno_&i. END = last;
+			IF last THEN DO;
+				CALL SYMPUTX('o_balance', closing_balance);
+			END;
+		RUN;
+		
+	%END;
+
+%MEND;  

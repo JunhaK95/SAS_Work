@@ -1,0 +1,17 @@
+%MACRO splitter(group =, data=, out=);
+	
+	PROC SQL noprint;
+		SELECT DISTINCT &group. INTO :groupvalues by '|' 
+		FROM &data.
+		WHERE ir_change IS NOT NULL;
+	QUIT;
+	
+	%DO i=1 %TO %SYSFUNC(COUNTW(&groupvalues. , |));
+		%LET groupvalue = %SCAN(&groupvalues., &i., |);
+		
+		DATA &out._&i.;
+			SET &data.;
+			WHERE &group. = &groupvalue.;
+		RUN;
+	%END;
+%MEND;

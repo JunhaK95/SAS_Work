@@ -1,0 +1,23 @@
+%MACRO sharia_builder(sharia, prs_out);
+
+DATA work.&prs_out;
+	SET work.prime_rate;
+	FORMAT ir_start_date ir_end_date yymmdd10.;
+	
+	sharia_flag = "&sharia";
+	
+	IF sharia_flag = 'y' THEN DO;
+		ir_start_date = start_date_sharia;
+		ir_end_date = end_date_sharia;
+	END;
+
+	ELSE DO;
+		ir_start_date = start_date;
+		ir_end_date = end_date;
+	END;
+
+	ir_between = ir_end_date - ir_start_date;
+	
+	DROP start_date_sharia end_date_sharia start_date end_date sharia_flag;
+RUN;
+%MEND sharia_builder;
